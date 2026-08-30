@@ -1,0 +1,42 @@
+[
+  {
+    "title": "Core CPI m/m",
+    "country": "USD",
+    "date": "2024-05-15T08:30:00-04:00",
+    "impact": "High",
+    "forecast": "0.3%",
+    "previous": "0.4%"
+  },
+  {
+    "title": "Empire State Manufacturing Index",
+    "country": "USD",
+    "date": "2024-05-15T08:30:00-04:00",
+    "impact": "Medium",
+    "forecast": "-10.0",
+    "previous": "-14.3"
+  },
+  {
+    "title": "Retail Sales m/m",
+    "country": "USD",
+    "date": "2024-05-15T09:15:00-04:00",
+    "impact": "High",
+    "forecast": "0.4%",
+    "previous": "0.7%"
+  },
+  {
+    "title": "ECB President Lagarde Speaks",
+    "country": "EUR",
+    "date": "2024-05-15T09:00:00-04:00",
+    "impact": "Medium",
+    "forecast": "",
+    "previous": ""
+  },
+  {
+    "title": "Bank Holiday",
+    "country": "USD",
+    "date": "2024-05-27T00:00:00-04:00",
+    "impact": "Holiday",
+    "forecast": "",
+    "previous": ""
+  }
+]

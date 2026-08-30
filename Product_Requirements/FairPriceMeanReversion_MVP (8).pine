@@ -1,0 +1,882 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════════
+//  FAIR PRICE MEAN REVERSION  +  BOS / CHoCH / DISPLACEMENT              [MVP]
+//  Primary test instrument: MNQ (Micro E-mini Nasdaq-100) — NOT hardcoded.
+//
+//  THERE IS NO "FIRST CANDLE COLOUR" ENTRY IN THIS SCRIPT.
+//  The first 1-minute candle of a session is used ONLY to set Fair Price.
+//
+//  ONE engine only:
+//    Fair Price  ->  regime (above/below/inside zone)
+//    -> market-structure state machine (HH/HL/LH/LL)
+//    -> break of the single ACTIVE structure level = CHoCH or BOS
+//    -> the breaking candle IS the displacement candle = entry candle
+//    -> SL = displacement candle extreme, TP = RR multiple
+//
+//  Execution model: process_orders_on_close = true, so an entry signalled at a
+//  candle close is filled AT that close (matches the spec). See docs for the
+//  live-trading caveat.
+//
+//  BAR MAGNIFIER: use_bar_magnifier is set to FALSE below because it is a
+//  PREMIUM-plan-only feature — enabling it on any lower plan throws
+//  "Upgrade to the Premium plan to access higher bar detalization".
+//  If (and only if) you are on Premium, change it to true: it makes the broker
+//  emulator resolve same-candle TP/SL fills from lower-timeframe data, which is
+//  the only real fix for that ambiguity inside TradingView.
+// ═══════════════════════════════════════════════════════════════════════════════
+strategy(
+     title                   = "Fair Price Mean Reversion · BOS/CHoCH/DISP [MVP]",
+     shorttitle              = "FPMR-MVP",
+     overlay                 = true,
+     initial_capital         = 100000,
+     default_qty_type        = strategy.fixed,
+     default_qty_value       = 1,
+     pyramiding              = 0,
+     calc_on_every_tick      = false,
+     process_orders_on_close = true,
+     use_bar_magnifier       = false,
+     max_boxes_count         = 500,
+     max_lines_count         = 500,
+     max_labels_count        = 500)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0. INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════
+G_SES = "1 · Sessions"
+G_FP  = "2 · Fair Price"
+G_MS  = "3 · Market Structure"
+G_TM  = "4 · Trade Management"
+G_FLT = "5 · Filters"
+G_VIS = "6 · Visualisation"
+G_DBG = "7 · Debug & Alerts"
+
+// ── 1 · SESSIONS ──────────────────────────────────────────────────────────────
+tzChoice = input.string("America/New_York", "Session timezone",
+     options = ["America/New_York", "America/Chicago", "America/Los_Angeles",
+                 "Europe/London", "Europe/Berlin", "Asia/Kolkata", "Asia/Tokyo",
+                 "Asia/Shanghai", "Australia/Sydney", "UTC", "Chart / Exchange"],
+     group = G_SES)
+tzUse = tzChoice == "Chart / Exchange" ? syminfo.timezone : tzChoice
+
+s1On = input.bool(true,  "Session 1", group = G_SES, inline = "s1")
+s1   = input.session("0930-1000", "", group = G_SES, inline = "s1")
+s2On = input.bool(false, "Session 2", group = G_SES, inline = "s2")
+s2   = input.session("1030-1130", "", group = G_SES, inline = "s2")
+s3On = input.bool(false, "Session 3", group = G_SES, inline = "s3")
+s3   = input.session("1400-1500", "", group = G_SES, inline = "s3")
+
+// ── 2 · FAIR PRICE ────────────────────────────────────────────────────────────
+fpSrcMode = input.string("Close", "Fair Price source (opening candle)",
+     options = ["Close", "Open", "HL2", "HLC3"], group = G_FP,
+     tooltip = "Spec default = CLOSE of the first 1-minute candle of the session.")
+fpTF      = input.timeframe("1", "Fair Price reference candle timeframe", group = G_FP,
+     tooltip = "Spec = 1 minute. Fair Price is pulled from this timeframe regardless of chart timeframe.")
+zoneUnit  = input.string("Points", "Zone distance unit", options = ["Points", "Ticks"], group = G_FP)
+zoneDist  = input.float(20.0, "Fair Price zone distance", minval = 0.0, step = 0.25, group = G_FP)
+fpExtend  = input.int(5, "Fair Price line forward extension (bars)", minval = 1, group = G_FP)
+fpKeep    = input.int(5, "Fair Price drawings kept (history)", minval = 1, maxval = 50, group = G_FP)
+
+zoneOffset = zoneUnit == "Ticks" ? zoneDist * syminfo.mintick : zoneDist
+
+// ── 3 · MARKET STRUCTURE ──────────────────────────────────────────────────────
+pvtL    = input.int(3, "Pivot left bars",  minval = 1, group = G_MS)
+pvtR    = input.int(2, "Pivot right bars", minval = 1, group = G_MS,
+     tooltip = "A swing is only CONFIRMED this many bars after it printed. This delay is the price of not repainting.")
+brkMode = input.string("Close", "Structure break confirmation", options = ["Close", "Wick"], group = G_MS)
+actMode = input.string("Latest swing", "Active level update mode",
+     options = ["Latest swing", "Role-valid only"], group = G_MS,
+     tooltip = "Latest swing: the newest confirmed pivot always becomes the active level. " +
+               "Role-valid only: a new active LOW is accepted only if it is a genuine HL (bullish state) " +
+               "or a genuine LL (bearish state); same idea mirrored for highs.")
+
+// ── 4 · TRADE MANAGEMENT ──────────────────────────────────────────────────────
+rr         = input.float(1.5, "Risk / Reward ratio", minval = 0.1, step = 0.1, group = G_TM)
+maxDay     = input.int(3, "Max trades per DAY (0 = unlimited)", minval = 0, group = G_TM)
+maxSessTr  = input.int(0, "Max trades per SESSION (0 = unlimited)", minval = 0, group = G_TM)
+setupBars  = input.int(30, "Setup validity (bars, 0 = never expires)", minval = 0, group = G_TM,
+     tooltip = "Measured in BARS from the bar on which the active structure level was CONFIRMED. " +
+               "If the level is not broken within this many bars it is discarded and we wait for a new swing.")
+oneAtATime = input.bool(true, "Only one open trade at a time", group = G_TM)
+useCHOCH   = input.bool(true, "Take CHoCH entries", group = G_TM)
+useBOS     = input.bool(true, "Take BOS entries", group = G_TM)
+slBufTk    = input.float(0, "SL buffer (ticks beyond displacement candle)", minval = 0, group = G_TM)
+minStopTk  = input.float(0, "Minimum stop distance (ticks, 0 = off)", minval = 0, group = G_TM)
+closeEOS   = input.bool(false, "Close trades at session end", group = G_TM)
+sameBar    = input.string("SL first (conservative)", "Same-candle TP/SL priority",
+     options = ["SL first (conservative)", "TP first", "Bar direction heuristic", "Lower timeframe check"],
+     group = G_TM,
+     tooltip = "Controls the REPORTED exit reason / drawing when one candle contains both levels. " +
+               "The actual fill is decided by TradingView's broker emulator — see docs.")
+ltfRes     = input.timeframe("5S", "Lower timeframe for same-candle check", group = G_TM)
+
+// ── 4b · EXTENDED-MOVE TP OVERRIDE ────────────────────────────────────────────
+// When price has stretched X% away from Fair Price, the next Y trades aim at the
+// Fair Price line instead of (or alongside) the plain RR target.
+G_XTP    = "4b · Extended-move TP override"
+xtpOn    = input.bool(false, "Enable extended-move TP override", group = G_XTP)
+xtpPct   = input.float(0.5, "Trigger: distance from Fair Price (%)", minval = 0.0, step = 0.05, group = G_XTP,
+     tooltip = "Percentage of Fair Price. At FP 29,300 a value of 0.5 means 146.5 points.")
+xtpCount = input.int(1, "Y — trades to apply it to after the trigger", minval = 1, group = G_XTP,
+     tooltip = "The counter refills to Y on every bar price is still beyond the trigger distance, " +
+               "and resets to 0 at the start of each session.")
+xtpMode  = input.string("Fair Price line, always", "TP target while active",
+     options = ["Fair Price line, always", "Nearer of the two", "Farther of the two"], group = G_XTP,
+     tooltip = "Nearer / Farther compare the Fair Price target against the normal RR target and pick one.")
+xtpOffR  = input.float(0.0, "TP offset from Fair Price (stop short by)", minval = 0.0, step = 0.25, group = G_XTP,
+     tooltip = "Uses the same unit as the Fair Price zone distance. Pulls the target back toward the entry " +
+               "so you are not queuing exactly at the line everyone else is watching.")
+
+// ── 5 · FILTERS ───────────────────────────────────────────────────────────────
+useEMA  = input.bool(false, "Use EMA filter",  group = G_FLT)
+emaL1   = input.int(9,  "EMA 1 length", minval = 1, group = G_FLT)
+emaL2   = input.int(21, "EMA 2 length", minval = 1, group = G_FLT)
+useVWAP = input.bool(false, "Use VWAP filter", group = G_FLT)
+
+// ── 6 · VISUALISATION ─────────────────────────────────────────────────────────
+showFP     = input.bool(true,  "Show Fair Price line", group = G_VIS)
+showFPZone = input.bool(true,  "Show Fair Price zone", group = G_VIS)
+showHH     = input.bool(true,  "Show HH", group = G_VIS, inline = "sw1")
+showHL     = input.bool(true,  "Show HL", group = G_VIS, inline = "sw1")
+showLH     = input.bool(true,  "Show LH", group = G_VIS, inline = "sw2")
+showLL     = input.bool(true,  "Show LL", group = G_VIS, inline = "sw2")
+showBOS    = input.bool(true,  "Show BOS",   group = G_VIS, inline = "ev")
+showCHOCH  = input.bool(true,  "Show CHoCH", group = G_VIS, inline = "ev")
+showDISP   = input.bool(true,  "Show DISP",  group = G_VIS, inline = "ev")
+drawWinOn  = input.bool(false, "Restrict drawings to a time window", group = G_VIS,
+     tooltip = "TradingView hard-caps a script at 500 labels / 500 lines / 500 boxes, and silently deletes the " +
+               "oldest once the cap is hit — which is why older dates show trades but no structure labels. " +
+               "Narrow this window to the hours you actually study and the same 500 objects stretch across " +
+               "many more days. Time of day only, in the session timezone, applied to every day. " +
+               "DRAWINGS ONLY: logic, order list and backtest results are identical either way.")
+drawWin    = input.session("0930-1030", "Draw only during (time of day)", group = G_VIS)
+swingInSes = input.bool(true,  "Label swings inside sessions only", group = G_VIS,
+     tooltip = "Pivots outside your session windows cannot produce a trade. Suppressing their labels is the " +
+               "single biggest saving against the 500-label cap.")
+showBrkLvl = input.bool(true,  "Draw the broken structure level on every break", group = G_VIS,
+     tooltip = "Dotted line from the swing that formed the level to the candle that closed through it. " +
+               "This is the exact level the CHoCH/BOS was measured against — use it to audit any entry.")
+showEntry  = input.bool(true,  "Show Entry", group = G_VIS, inline = "tr1")
+showSLl    = input.bool(true,  "Show SL",    group = G_VIS, inline = "tr1")
+showTPl    = input.bool(true,  "Show TP",    group = G_VIS, inline = "tr1")
+showRisk   = input.bool(true,  "Show Risk zone",   group = G_VIS, inline = "tr2")
+showReward = input.bool(true,  "Show Reward zone", group = G_VIS, inline = "tr2")
+showExit   = input.bool(true,  "Show Exit labels", group = G_VIS)
+showEma1   = input.bool(false, "Show EMA 1", group = G_VIS, inline = "ind")
+showEma2   = input.bool(false, "Show EMA 2", group = G_VIS, inline = "ind")
+showVwapL  = input.bool(false, "Show VWAP",  group = G_VIS, inline = "ind")
+maxTrDraw  = input.int(30, "Trade drawings kept (history)", minval = 1, maxval = 100, group = G_VIS)
+
+// Global drawing gate — see "Restrict drawings to a time window" above.
+// Off => every bar may draw, and TradingView deletes the oldest objects at the cap.
+// On  => only bars whose TIME OF DAY falls inside the window draw anything, on every day.
+//        Evaluated in the same timezone as the trading sessions.
+canDraw = not drawWinOn or not na(time(timeframe.period, drawWin, tzUse))
+
+colLong  = color.new(#26a69a, 0)
+colShort = color.new(#ef5350, 0)
+colFP    = color.new(#ffb300, 0)
+
+// ── 7 · DEBUG & ALERTS ────────────────────────────────────────────────────────
+showPanel = input.bool(true,  "Show debug panel", group = G_DBG)
+showReject = input.bool(false, "Label rejected setups (×REASON)", group = G_DBG,
+     tooltip = "Marks every displacement candle that did NOT produce a trade with the FIRST gate that blocked it. " +
+               "Turn this on to answer 'why was there no entry here?' — the debug panel only ever shows the LAST bar of the chart.")
+useAlerts = input.bool(true,  "Fire alert() calls", group = G_DBG,
+     tooltip = "Create ONE alert on this strategy and choose 'Any alert() function call'.")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 1. SESSION MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+// Sessions are evaluated in the user-selected timezone. If two sessions overlap,
+// the lowest-numbered enabled session wins.
+f_sessIdx() =>
+    i1 = s1On and not na(time(timeframe.period, s1, tzUse))
+    i2 = s2On and not na(time(timeframe.period, s2, tzUse))
+    i3 = s3On and not na(time(timeframe.period, s3, tzUse))
+    i1 ? 1 : i2 ? 2 : i3 ? 3 : 0
+
+sessIdx   = f_sessIdx()
+inSess    = sessIdx != 0
+sessStart = inSess and nz(sessIdx[1]) != sessIdx
+sessEnd   = not inSess and nz(sessIdx[1]) != 0
+
+// Calendar day (in session timezone) — used for the daily trade cap.
+newDay = ta.change(dayofmonth(time, tzUse)) != 0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2. FAIR PRICE  (first candle of the session, on the reference timeframe)
+// ═══════════════════════════════════════════════════════════════════════════════
+// The engine below runs INSIDE the requested (1-minute) context:
+//   bar 1 of the session -> "armed"
+//   bar 2 of the session -> Fair Price := source of bar 1  (i.e. after it CLOSED)
+// Fair Price is therefore never taken from an unfinished candle -> no repainting.
+// It resets to na the moment the session ends, so every session gets its own.
+f_fairEngine() =>
+    idx = f_sessIdx()
+    src = fpSrcMode == "Close" ? close : fpSrcMode == "Open" ? open : fpSrcMode == "HL2" ? hl2 : hlc3
+    var int   curIdx = 0
+    var bool  armed  = false
+    var float fp     = na
+    if idx == 0
+        curIdx := 0
+        armed  := false
+        fp     := na
+    else if idx != curIdx
+        curIdx := idx
+        armed  := true
+        fp     := na
+    else if armed
+        fp     := src[1]
+        armed  := false
+    [idx, fp]
+
+[fpSessIdx, fairPrice] = request.security(syminfo.tickerid, fpTF, f_fairEngine(),
+     lookahead = barmerge.lookahead_off)
+
+hasFair = not na(fairPrice)
+fpUpper = fairPrice + zoneOffset
+fpLower = fairPrice - zoneOffset
+
+// Regime:  1 = above zone (short-hunting)   -1 = below zone (long-hunting)   0 = inside / no fair price
+posState   = not hasFair ? 0 : close > fpUpper ? 1 : close < fpLower ? -1 : 0
+insideZone = hasFair and close <= fpUpper and close >= fpLower
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 3. FAIR PRICE VISUALISATION (dynamic extension, pruned history)
+// ═══════════════════════════════════════════════════════════════════════════════
+var array<line>  fpLineArr = array.new<line>()
+var array<box>   fpBoxArr  = array.new<box>()
+var array<label> fpLblArr  = array.new<label>()
+var line  curFpLine = na
+var box   curFpBox  = na
+var label curFpLbl  = na
+
+f_pruneLines(array<line> arr, int maxN) =>
+    while array.size(arr) > maxN
+        line.delete(array.shift(arr))
+
+f_pruneBoxes(array<box> arr, int maxN) =>
+    while array.size(arr) > maxN
+        box.delete(array.shift(arr))
+
+f_pruneLabels(array<label> arr, int maxN) =>
+    while array.size(arr) > maxN
+        label.delete(array.shift(arr))
+
+fpIsNew = hasFair and (na(fairPrice[1]) or fairPrice != fairPrice[1])
+
+if fpIsNew
+    curFpLine := na
+    curFpBox  := na
+    curFpLbl  := na
+    if showFP and canDraw
+        curFpLine := line.new(bar_index, fairPrice, bar_index + fpExtend, fairPrice,
+             color = colFP, width = 2, style = line.style_solid)
+        array.push(fpLineArr, curFpLine)
+        curFpLbl := label.new(bar_index + fpExtend, fairPrice, "FAIR PRICE",
+             style = label.style_label_left, color = color.new(colFP, 80),
+             textcolor = colFP, size = size.tiny)
+        array.push(fpLblArr, curFpLbl)
+    if showFPZone and zoneOffset > 0 and canDraw
+        curFpBox := box.new(bar_index, fpUpper, bar_index + fpExtend, fpLower,
+             border_color = color.new(colFP, 50), border_width = 1,
+             bgcolor = color.new(colFP, 90))
+        array.push(fpBoxArr, curFpBox)
+    f_pruneLines(fpLineArr, fpKeep)
+    f_pruneBoxes(fpBoxArr, fpKeep)
+    f_pruneLabels(fpLblArr, fpKeep)
+
+// Extend forward candle-by-candle while the session is alive; freeze afterwards.
+if hasFair and inSess
+    if not na(curFpLine)
+        line.set_x2(curFpLine, bar_index + fpExtend)
+    if not na(curFpLbl)
+        label.set_x(curFpLbl, bar_index + fpExtend)
+    if not na(curFpBox)
+        box.set_right(curFpBox, bar_index + fpExtend)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 4. SWING DETECTION (confirmed pivots only — no look-ahead)
+// ═══════════════════════════════════════════════════════════════════════════════
+ph = ta.pivothigh(pvtL, pvtR)   // becomes non-na pvtR bars AFTER the pivot bar
+pl = ta.pivotlow(pvtL, pvtR)
+pivotBar = bar_index - pvtR
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 5. MARKET STRUCTURE STATE MACHINE
+// ═══════════════════════════════════════════════════════════════════════════════
+var int    structState  = 0      //  1 bullish   -1 bearish   0 undefined
+var float  actHigh      = na     //  the ONE active high (HH in bull state, LH in bear state)
+var string actHighRole  = ""
+var int    actHighConf  = na
+var int    actHighBar   = na
+var float  actLow       = na     //  the ONE active low  (HL in bull state, LL in bear state)
+var string actLowRole   = ""
+var int    actLowConf   = na
+var int    actLowBar    = na
+var float  prevPH       = na
+var float  prevPL       = na
+var int    lastPos      = 0
+var string lastChoch    = "—"
+var string lastBos      = "—"
+
+// Structure is reset when a new session starts or when price flips from one side
+// of the Fair Price zone to the other. Above the zone we START bullish, below it
+// we START bearish (per spec §8 / §15). This is also the primary setup-invalidator.
+regimeFlip = posState != 0 and posState != lastPos
+doReset    = sessStart or regimeFlip or (not hasFair and hasFair[1])
+
+if doReset
+    structState := posState
+    actHigh     := na
+    actLow      := na
+    actHighRole := ""
+    actLowRole  := ""
+    actHighConf := na
+    actLowConf  := na
+    actHighBar  := na
+    actLowBar   := na
+    prevPH      := na
+    prevPL      := na
+    lastPos     := 0
+
+// Seed the state the first time price is clearly on one side of the zone:
+// ABOVE Fair Price => we assume bullish structure, BELOW => bearish structure.
+if structState == 0 and posState != 0
+    structState := posState
+
+if posState != 0
+    lastPos := posState
+
+// ── new confirmed pivot HIGH ──────────────────────────────────────────────────
+newPH = not na(ph)
+string phRole = ""
+if newPH
+    phRole := na(prevPH) ? (structState == -1 ? "LH" : "HH") : (ph > prevPH ? "HH" : "LH")
+    roleOkH = actMode == "Latest swing" or (structState == 1 and phRole == "HH") or (structState == -1 and phRole == "LH") or na(actHigh)
+    if roleOkH
+        actHigh     := ph
+        actHighRole := phRole
+        actHighConf := bar_index
+        actHighBar  := pivotBar
+    prevPH := ph
+    if ((phRole == "HH" and showHH) or (phRole == "LH" and showLH)) and canDraw and (not swingInSes or inSess)
+        label.new(pivotBar, ph, phRole, style = label.style_label_down,
+             color = color.new(color.gray, 90), textcolor = color.gray,
+             size = size.tiny, yloc = yloc.abovebar)
+
+// ── new confirmed pivot LOW ───────────────────────────────────────────────────
+newPL = not na(pl)
+string plRole = ""
+if newPL
+    plRole := na(prevPL) ? (structState == 1 ? "HL" : "LL") : (pl > prevPL ? "HL" : "LL")
+    roleOkL = actMode == "Latest swing" or (structState == 1 and plRole == "HL") or (structState == -1 and plRole == "LL") or na(actLow)
+    if roleOkL
+        actLow     := pl
+        actLowRole := plRole
+        actLowConf := bar_index
+        actLowBar  := pivotBar
+    prevPL := pl
+    if ((plRole == "HL" and showHL) or (plRole == "LL" and showLL)) and canDraw and (not swingInSes or inSess)
+        label.new(pivotBar, pl, plRole, style = label.style_label_up,
+             color = color.new(color.gray, 90), textcolor = color.gray,
+             size = size.tiny, yloc = yloc.belowbar)
+
+// ── setup expiry (§49) ────────────────────────────────────────────────────────
+if setupBars > 0
+    if not na(actHigh) and not na(actHighConf) and bar_index - actHighConf > setupBars
+        actHigh     := na
+        actHighRole := ""
+    if not na(actLow) and not na(actLowConf) and bar_index - actLowConf > setupBars
+        actLow     := na
+        actLowRole := ""
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 6. BOS / CHoCH DETECTION  (the breaking candle IS the displacement candle)
+// ═══════════════════════════════════════════════════════════════════════════════
+brkDn = brkMode == "Close" ? close : low
+brkUp = brkMode == "Close" ? close : high
+
+bearBreak = not na(actLow)  and brkDn < actLow  and not na(actLowConf)  and bar_index >= actLowConf
+bullBreak = not na(actHigh) and brkUp > actHigh and not na(actHighConf) and bar_index >= actHighConf
+if bearBreak
+    bullBreak := false   // a single candle cannot break structure both ways
+
+string bearEvt = ""
+string bullEvt = ""
+float  brokenLevel = na
+int    brokenBar   = na
+
+if bearBreak
+    bearEvt     := structState == 1 ? "CHOCH" : "BOS"
+    brokenLevel := actLow
+    brokenBar   := actLowBar
+    structState := -1
+    actLow      := na          // level consumed — a NEW swing low must form
+    actLowRole  := ""
+    if bearEvt == "CHOCH"
+        lastChoch := "Bearish @ " + str.tostring(brokenLevel, format.mintick)
+    else
+        lastBos   := "Bearish @ " + str.tostring(brokenLevel, format.mintick)
+
+if bullBreak
+    bullEvt     := structState == -1 ? "CHOCH" : "BOS"
+    brokenLevel := actHigh
+    brokenBar   := actHighBar
+    structState := 1
+    actHigh     := na
+    actHighRole := ""
+    if bullEvt == "CHOCH"
+        lastChoch := "Bullish @ " + str.tostring(brokenLevel, format.mintick)
+    else
+        lastBos   := "Bullish @ " + str.tostring(brokenLevel, format.mintick)
+
+// ── event labels ──────────────────────────────────────────────────────────────
+if bearBreak and canDraw
+    if (bearEvt == "CHOCH" and showCHOCH) or (bearEvt == "BOS" and showBOS)
+        label.new(bar_index, high, bearEvt, style = label.style_label_down,
+             color = color.new(colShort, 25), textcolor = color.white,
+             size = size.small, yloc = yloc.abovebar)
+    if showDISP
+        label.new(bar_index, high, "DISP", style = label.style_triangledown,
+             color = colShort, textcolor = color.white, size = size.tiny, yloc = yloc.abovebar)
+if bullBreak and canDraw
+    if (bullEvt == "CHOCH" and showCHOCH) or (bullEvt == "BOS" and showBOS)
+        label.new(bar_index, low, bullEvt, style = label.style_label_up,
+             color = color.new(colLong, 25), textcolor = color.white,
+             size = size.small, yloc = yloc.belowbar)
+    if showDISP
+        label.new(bar_index, low, "DISP", style = label.style_triangleup,
+             color = colLong, textcolor = color.white, size = size.tiny, yloc = yloc.belowbar)
+
+// ── the level that was actually broken ────────────────────────────────────────
+// Dotted line from the swing that created the level to the candle that closed
+// through it, so any entry can be audited against the exact number the script used.
+if showBrkLvl and canDraw and (bearBreak or bullBreak) and not na(brokenBar) and not na(brokenLevel)
+    line.new(brokenBar, brokenLevel, bar_index, brokenLevel,
+         color = bearBreak ? colShort : colLong, style = line.style_dotted, width = 1)
+    label.new(bar_index, brokenLevel, str.tostring(brokenLevel, format.mintick),
+         style = label.style_label_left, color = color.new(color.black, 100),
+         textcolor = bearBreak ? colShort : colLong, size = size.tiny)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 7. FILTERS (EMA / VWAP) — visual toggles are fully independent of logic toggles
+// ═══════════════════════════════════════════════════════════════════════════════
+ema1 = ta.ema(close, emaL1)
+ema2 = ta.ema(close, emaL2)
+plot(showEma1 ? ema1 : na, "EMA 1", color = color.new(#42a5f5, 0), linewidth = 1)
+plot(showEma2 ? ema2 : na, "EMA 2", color = color.new(#ab47bc, 0), linewidth = 1)
+
+vwapAnchor = sessStart or newDay
+vwapVal    = ta.vwap(hlc3, vwapAnchor)
+plot(showVwapL ? vwapVal : na, "VWAP", color = color.new(#ffa726, 0), linewidth = 1)
+
+// LONG needs ema1 > ema2 ; SHORT needs ema1 < ema2. Filter OFF => always true.
+emaOkLong  = not useEMA or (ema1 > ema2)
+emaOkShort = not useEMA or (ema1 < ema2)
+// LONG needs price above VWAP ; SHORT needs price below VWAP. na VWAP => pass.
+vwapOkLong  = not useVWAP or na(vwapVal) or (close > vwapVal)
+vwapOkShort = not useVWAP or na(vwapVal) or (close < vwapVal)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 8. TRADE STATE + VISUALISATION ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+type TradeViz
+    box   riskBox
+    box   rewardBox
+    line  entryLine
+    line  slLine
+    line  tpLine
+    label entryLbl
+    label exitLbl
+
+var array<TradeViz> vizArr = array.new<TradeViz>()
+var TradeViz curViz  = na
+
+var bool   tradeOpen  = false
+var int    tradeDir   = 0
+var float  tEntry     = na
+var float  tSL        = na
+var float  tTP        = na
+var int    tEntryBar  = na
+var int    tradeSeq   = 0
+var string tradeId    = ""
+var int    tradesDay  = 0
+var int    tradesSes  = 0
+var int    ambigCount = 0
+var string lastExit   = "—"
+
+f_dropViz(TradeViz v) =>
+    if not na(v)
+        if not na(v.riskBox)
+            box.delete(v.riskBox)
+        if not na(v.rewardBox)
+            box.delete(v.rewardBox)
+        if not na(v.entryLine)
+            line.delete(v.entryLine)
+        if not na(v.slLine)
+            line.delete(v.slLine)
+        if not na(v.tpLine)
+            line.delete(v.tpLine)
+        if not na(v.entryLbl)
+            label.delete(v.entryLbl)
+        if not na(v.exitLbl)
+            label.delete(v.exitLbl)
+
+// createTradeVisualization()
+f_openViz(int dir, float e, float sl, float tp, int b, string tag) =>
+    TradeViz v = TradeViz.new()
+    cR = colShort   // risk zone is always red
+    cW = colLong    // reward zone is always green
+    if showRisk and canDraw
+        v.riskBox := box.new(b, math.max(e, sl), b, math.min(e, sl),
+             border_color = color.new(cR, 60), border_width = 1, bgcolor = color.new(cR, 85))
+    if showReward and canDraw
+        v.rewardBox := box.new(b, math.max(e, tp), b, math.min(e, tp),
+             border_color = color.new(cW, 60), border_width = 1, bgcolor = color.new(cW, 85))
+    if showEntry and canDraw
+        v.entryLine := line.new(b, e, b, e, color = color.new(color.white, 20), width = 1, style = line.style_solid)
+        v.entryLbl  := label.new(b, e, tag, style = dir > 0 ? label.style_label_up : label.style_label_down,
+             color = color.new(dir > 0 ? colLong : colShort, 20), textcolor = color.white, size = size.tiny)
+    if showSLl and canDraw
+        v.slLine := line.new(b, sl, b, sl, color = colShort, width = 1, style = line.style_dashed)
+    if showTPl and canDraw
+        v.tpLine := line.new(b, tp, b, tp, color = colLong, width = 1, style = line.style_dashed)
+    array.push(vizArr, v)
+    while array.size(vizArr) > maxTrDraw
+        f_dropViz(array.shift(vizArr))
+    v
+
+// updateTradeVisualization()
+f_updViz(TradeViz v, int r) =>
+    if not na(v)
+        if not na(v.riskBox)
+            box.set_right(v.riskBox, r)
+        if not na(v.rewardBox)
+            box.set_right(v.rewardBox, r)
+        if not na(v.entryLine)
+            line.set_x2(v.entryLine, r)
+        if not na(v.slLine)
+            line.set_x2(v.slLine, r)
+        if not na(v.tpLine)
+            line.set_x2(v.tpLine, r)
+
+// closeTradeVisualization()  — freezes the right edge on the EXACT exit candle
+f_closeViz(TradeViz v, int r, float px, string reason, bool ambiguous) =>
+    f_updViz(v, r)
+    if not na(v) and showExit and canDraw
+        v.exitLbl := label.new(r, px, reason + (ambiguous ? "?" : ""),
+             style = label.style_label_left,
+             color = color.new(reason == "TP" ? colLong : colShort, 20),
+             textcolor = color.white, size = size.tiny)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 9. ENTRY VALIDATION
+// ═══════════════════════════════════════════════════════════════════════════════
+if newDay
+    tradesDay := 0
+if sessStart
+    tradesSes := 0
+
+// ── extended-move TP override: trigger + counter ──────────────────────────────
+// Distance is measured as a percentage of Fair Price, on the current close.
+// Counter refills while price stays beyond the trigger, so a sustained stretch
+// keeps Y trades armed; it is cleared at every session start because Fair Price
+// itself changes there.
+xtpDistPct = hasFair and fairPrice != 0.0 ? math.abs(close - fairPrice) / fairPrice * 100.0 : na
+xtpArmed   = xtpOn and hasFair and not na(xtpDistPct) and xtpDistPct >= xtpPct
+xtpOffs    = zoneUnit == "Ticks" ? xtpOffR * syminfo.mintick : xtpOffR
+var int xtpLeft = 0
+if sessStart
+    xtpLeft := 0
+if xtpArmed
+    xtpLeft := xtpCount
+
+// Returns [take-profit price, was the override actually used].
+// The override is skipped when the Fair Price target sits on the wrong side of
+// the entry (it would be an instantly-filled or negative-reward target) — that is
+// a mechanical impossibility, not a policy choice. Sub-1R targets ARE taken.
+f_finalTp(int dir, float e, float risk) =>
+    float rrTp = dir < 0 ? e - risk * rr : e + risk * rr
+    float tp   = rrTp
+    bool  used = false
+    if xtpOn and xtpLeft > 0 and hasFair
+        float fpT = dir < 0 ? fairPrice + xtpOffs : fairPrice - xtpOffs
+        bool  ok  = dir < 0 ? fpT < e - syminfo.mintick : fpT > e + syminfo.mintick
+        if ok
+            used := true
+            if xtpMode == "Fair Price line, always"
+                tp := fpT
+            else if xtpMode == "Nearer of the two"
+                tp := dir < 0 ? math.max(fpT, rrTp) : math.min(fpT, rrTp)
+            else
+                tp := dir < 0 ? math.min(fpT, rrTp) : math.max(fpT, rrTp)
+    [tp, used]
+
+dayOk  = maxDay    == 0 or tradesDay < maxDay
+sesOk  = maxSessTr == 0 or tradesSes < maxSessTr
+flatOk = not oneAtATime or (not tradeOpen and strategy.position_size == 0)
+
+// Common gate: inside an enabled session, Fair Price established, price OUTSIDE
+// the Fair Price zone, limits not exhausted.
+baseOk = inSess and hasFair and not insideZone and dayOk and sesOk and flatOk
+
+evtOkBear = bearEvt == "CHOCH" ? useCHOCH : bearEvt == "BOS" ? useBOS : false
+evtOkBull = bullEvt == "CHOCH" ? useCHOCH : bullEvt == "BOS" ? useBOS : false
+
+shortSig = baseOk and bearBreak and posState ==  1 and evtOkBear and emaOkShort and vwapOkShort
+longSig  = baseOk and bullBreak and posState == -1 and evtOkBull and emaOkLong  and vwapOkLong
+
+// Set true the moment an order is actually submitted, so the rejection logger below
+// can tell "no entry" apart from "entry taken".
+bool tookEntry = false
+
+// ── execute ───────────────────────────────────────────────────────────────────
+if shortSig
+    e  = close
+    sl = high + slBufTk * syminfo.mintick
+    risk = sl - e
+    if risk > 0 and risk >= minStopTk * syminfo.mintick
+        [tp, xtpUsed] = f_finalTp(-1, e, risk)
+        if xtpUsed
+            xtpLeft := xtpLeft - 1
+        tradeSeq += 1
+        tradeId  := "T" + str.tostring(tradeSeq)
+        strategy.entry(tradeId, strategy.short, comment = "SHORT " + bearEvt)
+        tradeOpen := true
+        tradeDir  := -1
+        tEntry    := e
+        tSL       := sl
+        tTP       := tp
+        tEntryBar := bar_index
+        tradesDay += 1
+        tradesSes += 1
+        curViz    := f_openViz(-1, e, sl, tp, bar_index, "SHORT #" + str.tostring(tradeSeq) + (xtpUsed ? " ·FP" : ""))
+        tookEntry := true
+        if useAlerts
+            alert("SHORT entry (" + bearEvt + ") @ " + str.tostring(e, format.mintick) +
+                  " | SL " + str.tostring(sl, format.mintick) + " | TP " + str.tostring(tp, format.mintick),
+                  alert.freq_once_per_bar_close)
+
+if longSig
+    e  = close
+    sl = low - slBufTk * syminfo.mintick
+    risk = e - sl
+    if risk > 0 and risk >= minStopTk * syminfo.mintick
+        [tp, xtpUsed] = f_finalTp(1, e, risk)
+        if xtpUsed
+            xtpLeft := xtpLeft - 1
+        tradeSeq += 1
+        tradeId  := "T" + str.tostring(tradeSeq)
+        strategy.entry(tradeId, strategy.long, comment = "LONG " + bullEvt)
+        tradeOpen := true
+        tradeDir  := 1
+        tEntry    := e
+        tSL       := sl
+        tTP       := tp
+        tEntryBar := bar_index
+        tradesDay += 1
+        tradesSes += 1
+        curViz    := f_openViz(1, e, sl, tp, bar_index, "LONG #" + str.tostring(tradeSeq) + (xtpUsed ? " ·FP" : ""))
+        tookEntry := true
+        if useAlerts
+            alert("LONG entry (" + bullEvt + ") @ " + str.tostring(e, format.mintick) +
+                  " | SL " + str.tostring(sl, format.mintick) + " | TP " + str.tostring(tp, format.mintick),
+                  alert.freq_once_per_bar_close)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 9b. REJECTION DIAGNOSTICS
+// ═══════════════════════════════════════════════════════════════════════════════
+// Every structure break is a displacement candle. If it did not become a trade,
+// exactly one gate stopped it. This reports the FIRST gate that failed, in the
+// same order the entry logic evaluates them.
+//
+//   SESSION    outside every enabled session window
+//   NO FP      Fair Price not established yet for this session
+//   IN ZONE    close is inside the Fair Price zone  (spec §6 / §43)
+//   SIDE       break direction disagrees with the Fair Price side (spec §44):
+//              a bullish break ABOVE Fair Price, or a bearish break BELOW it,
+//              is labelled but never traded
+//   DAY CAP    max trades per day reached
+//   SESS CAP   max trades per session reached
+//   IN TRADE   a trade is already open and "one at a time" is on
+//   EVT OFF    CHoCH or BOS entries disabled for this event type
+//   EMA        EMA filter rejected it
+//   VWAP       VWAP filter rejected it
+//   RISK       displacement candle too small: risk <= 0 or below min stop distance
+f_rejectReason(int dir) =>
+    string r = "RISK"
+    if not inSess
+        r := "SESSION"
+    else if not hasFair
+        r := "NO FP"
+    else if insideZone
+        r := "IN ZONE"
+    else if (dir < 0 and posState != 1) or (dir > 0 and posState != -1)
+        r := "SIDE"
+    else if not dayOk
+        r := "DAY CAP"
+    else if not sesOk
+        r := "SESS CAP"
+    else if not flatOk
+        r := "IN TRADE"
+    else if (dir < 0 and not evtOkBear) or (dir > 0 and not evtOkBull)
+        r := "EVT OFF"
+    else if (dir < 0 and not emaOkShort) or (dir > 0 and not emaOkLong)
+        r := "EMA"
+    else if (dir < 0 and not vwapOkShort) or (dir > 0 and not vwapOkLong)
+        r := "VWAP"
+    r
+
+if showReject and canDraw and (bearBreak or bullBreak) and not tookEntry
+    rDir = bearBreak ? -1 : 1
+    label.new(bar_index, bearBreak ? high : low, "×" + f_rejectReason(rDir),
+         style = bearBreak ? label.style_label_down : label.style_label_up,
+         color = color.new(color.gray, 55), textcolor = color.new(color.orange, 0),
+         size = size.tiny, yloc = bearBreak ? yloc.abovebar : yloc.belowbar)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 10. EXIT MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+// Bracket order is (re)submitted every bar while the trade is open — idempotent.
+if tradeOpen and not na(tSL) and not na(tTP)
+    strategy.exit("X" + tradeId, from_entry = tradeId, stop = tSL, limit = tTP)
+
+// Optional session-end flat.
+if closeEOS and tradeOpen and sessEnd
+    strategy.close_all(comment = "SessionEnd")
+
+// Same-candle ambiguity detection (both levels inside this candle's range).
+ambigNow = tradeOpen and (tradeDir < 0 ? (high >= tSL and low <= tTP) : (low <= tSL and high >= tTP))
+if ambigNow
+    ambigCount += 1
+
+// Optional lower-timeframe first-touch resolution (report only).
+ltfOk  = sameBar == "Lower timeframe check" and timeframe.in_seconds(ltfRes) < timeframe.in_seconds(timeframe.period)
+ltfTF  = ltfOk ? ltfRes : timeframe.period
+[ltfH, ltfL] = request.security_lower_tf(syminfo.tickerid, ltfTF, [high, low])
+
+f_ltfVerdict(int dir, float sl, float tp) =>
+    string v = ""
+    n = array.size(ltfH)
+    if n > 0 and array.size(ltfL) == n
+        for i = 0 to n - 1
+            hi = array.get(ltfH, i)
+            lo = array.get(ltfL, i)
+            if dir < 0
+                if hi >= sl
+                    v := "SL"
+                    break
+                if lo <= tp
+                    v := "TP"
+                    break
+            else
+                if lo <= sl
+                    v := "SL"
+                    break
+                if hi >= tp
+                    v := "TP"
+                    break
+    v
+
+// Exit detection is driven by the broker emulator's own record, so the drawing
+// always terminates on the real exit candle at the real exit price.
+closedN    = strategy.closedtrades
+justClosed = tradeOpen and closedN > nz(closedN[1])
+
+if justClosed
+    ci   = closedN - 1
+    xPx  = strategy.closedtrades.exit_price(ci)
+    xBar = strategy.closedtrades.exit_bar_index(ci)
+    tol  = syminfo.mintick * 0.5
+    string reason = "EXIT"
+    if tradeDir < 0
+        reason := xPx <= tTP + tol ? "TP" : xPx >= tSL - tol ? "SL" : "EXIT"
+    else
+        reason := xPx >= tTP - tol ? "TP" : xPx <= tSL + tol ? "SL" : "EXIT"
+    // Reported reason overrides for the ambiguous same-candle case.
+    if ambigNow and reason != "EXIT"
+        if sameBar == "SL first (conservative)"
+            reason := "SL"
+        else if sameBar == "TP first"
+            reason := "TP"
+        else if sameBar == "Bar direction heuristic"
+            reason := close >= open ? (tradeDir < 0 ? "TP" : "SL") : (tradeDir < 0 ? "SL" : "TP")
+        else if sameBar == "Lower timeframe check"
+            lv = f_ltfVerdict(tradeDir, tSL, tTP)
+            reason := lv == "" ? reason : lv
+    lastExit := reason + " @ " + str.tostring(xPx, format.mintick)
+    f_closeViz(curViz, xBar, xPx, reason, ambigNow)
+    if useAlerts
+        alert((reason == "TP" ? "TAKE PROFIT" : reason == "SL" ? "STOP LOSS" : "EXIT") +
+              " @ " + str.tostring(xPx, format.mintick), alert.freq_once_per_bar_close)
+    tradeOpen := false
+    tradeDir  := 0
+    curViz    := na
+else if tradeOpen
+    f_updViz(curViz, bar_index)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 11. STRUCTURE-EVENT ALERTS
+// ═══════════════════════════════════════════════════════════════════════════════
+if useAlerts
+    if bearBreak and bearEvt == "CHOCH"
+        alert("Bearish CHoCH @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+    if bearBreak and bearEvt == "BOS"
+        alert("Bearish BOS @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+    if bullBreak and bullEvt == "CHOCH"
+        alert("Bullish CHoCH @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+    if bullBreak and bullEvt == "BOS"
+        alert("Bullish BOS @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+    if bearBreak
+        alert("Bearish displacement candle @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+    if bullBreak
+        alert("Bullish displacement candle @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 12. DEBUG PANEL
+// ═══════════════════════════════════════════════════════════════════════════════
+var table dbg = na
+
+f_row(int r, string k, string v, color c) =>
+    table.cell(dbg, 0, r, k, text_size = size.tiny, text_color = color.new(color.gray, 20),
+         text_halign = text.align_left,  bgcolor = color.new(color.black, 70))
+    table.cell(dbg, 1, r, v, text_size = size.tiny, text_color = c,
+         text_halign = text.align_right, bgcolor = color.new(color.black, 70))
+
+if showPanel and barstate.islast
+    if na(dbg)
+        dbg := table.new(position.top_right, 2, 22, border_width = 1, border_color = color.new(color.gray, 70))
+    stateTxt = structState == 1 ? "BULLISH" : structState == -1 ? "BEARISH" : "—"
+    regTxt   = posState == 1 ? "ABOVE zone" : posState == -1 ? "BELOW zone" : hasFair ? "INSIDE zone (no new trades)" : "no Fair Price"
+    f_row(0,  "Chart TF",          timeframe.period + (timeframe.in_seconds(timeframe.period) > 60 ? "  (1m recommended)" : ""), color.silver)
+    f_row(1,  "Session",           inSess ? "S" + str.tostring(sessIdx) + " active" : "closed", inSess ? colLong : color.silver)
+    f_row(2,  "Fair Price",        hasFair ? str.tostring(fairPrice, format.mintick) : "—", colFP)
+    f_row(3,  "Zone",              hasFair ? str.tostring(fpLower, format.mintick) + " / " + str.tostring(fpUpper, format.mintick) : "—", colFP)
+    f_row(4,  "Price",             str.tostring(close, format.mintick), color.silver)
+    f_row(5,  "Distance from FP",  hasFair ? str.tostring(close - fairPrice, format.mintick) : "—", color.silver)
+    f_row(6,  "Regime",            regTxt, posState == 0 ? color.orange : color.silver)
+    f_row(7,  "Structure state",   stateTxt, structState == 1 ? colLong : structState == -1 ? colShort : color.silver)
+    f_row(8,  "Active high",       na(actHigh) ? "—" : actHighRole + " " + str.tostring(actHigh, format.mintick), color.silver)
+    f_row(9,  "Active low",        na(actLow)  ? "—" : actLowRole  + " " + str.tostring(actLow,  format.mintick), color.silver)
+    f_row(10, "Active-level age",  na(actLowConf) and na(actHighConf) ? "—" :
+              str.tostring(bar_index - math.max(nz(actLowConf, 0), nz(actHighConf, 0))) + " bars", color.silver)
+    f_row(11, "Last CHoCH",        lastChoch, color.silver)
+    f_row(12, "Last BOS",          lastBos, color.silver)
+    f_row(13, "Open trade",        tradeOpen ? (tradeDir > 0 ? "LONG " : "SHORT ") + tradeId : "flat",
+              tradeOpen ? (tradeDir > 0 ? colLong : colShort) : color.silver)
+    f_row(14, "Entry / SL / TP",   tradeOpen ? str.tostring(tEntry, format.mintick) + " / " +
+              str.tostring(tSL, format.mintick) + " / " + str.tostring(tTP, format.mintick) : "—", color.silver)
+    f_row(15, "Last exit",         lastExit, color.silver)
+    f_row(16, "Trades today",      str.tostring(tradesDay) + (maxDay > 0 ? " / " + str.tostring(maxDay) : ""), color.silver)
+    f_row(17, "Trades this session", str.tostring(tradesSes) + (maxSessTr > 0 ? " / " + str.tostring(maxSessTr) : ""), color.silver)
+    f_row(18, "EMA filter",        not useEMA ? "OFF" : (ema1 > ema2 ? "bull (longs ok)" : "bear (shorts ok)"),
+              not useEMA ? color.silver : (ema1 > ema2 ? colLong : colShort))
+    f_row(19, "VWAP filter",       not useVWAP ? "OFF" : na(vwapVal) ? "no volume data" :
+              (close > vwapVal ? "above (longs ok)" : "below (shorts ok)"),
+              not useVWAP ? color.silver : (close > vwapVal ? colLong : colShort))
+    f_row(20, "Same-bar TP/SL hits", str.tostring(ambigCount) + "  (" + sameBar + ")",
+              ambigCount > 0 ? color.orange : color.silver)
+    f_row(21, "FP-TP override",   not xtpOn ? "OFF" : (na(xtpDistPct) ? "—" :
+              str.tostring(xtpDistPct, "#.##") + "% from FP · " + str.tostring(xtpLeft) + " armed"),
+              not xtpOn ? color.silver : xtpLeft > 0 ? color.orange : color.silver)
