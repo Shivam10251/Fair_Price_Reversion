@@ -9,6 +9,7 @@
 #region Using declarations
 using System;
 using System.Globalization;
+using System.Windows.Media;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
 using NinjaTrader.NinjaScript.Indicators;
@@ -110,17 +111,25 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			_viz = new VisualEngine(this, RemoveDrawObject)
 			{
-				ShowFairPriceLine = ShowFairPriceLine,
-				ShowFullVisuals   = ShowFullVisuals,
-				ShowRejections    = ShowRejectionMarks,
-				ShowStatePanel    = ShowStatePanel,
-				FairPriceHistory  = FairPriceHistory,
-				TradeHistory      = TradeDrawingHistory,
-				ForwardExtend     = FairPriceExtendBars
+				ShowFairPriceLine  = ShowFairPriceLine,
+				ShowFairPriceZone  = ShowFairPriceZone,
+				ShowFullVisuals    = ShowFullVisuals,
+				ShowRejections     = ShowRejectionMarks,
+				ShowStatePanel     = ShowStatePanel,
+				ShowTradeZones     = ShowTradeZones,
+				ShowSessionShading = ShowSessionShading,
+				SessionBrush       = SessionShadingBrush ?? Brushes.LightBlue,
+				SessionOpacity     = SessionShadingOpacity,
+				SessionHistory     = SessionShadingHistory,
+				FairPriceHistory   = FairPriceHistory,
+				TradeHistory       = TradeDrawingHistory,
+				ForwardExtend      = FairPriceExtendBars
 			};
 
-			_emaFast = EMA(EmaFastLength);
-			_emaSlow = EMA(EmaSlowLength);
+			// Only construct what the filter will actually read — an unused EMA is pure
+			// per-bar cost, and a null leg is what tells the gate that leg is disabled.
+			_emaFast = UseEmaFilter && UseEma1 ? EMA(EmaFastLength) : null;
+			_emaSlow = UseEmaFilter && UseEma2 ? EMA(EmaSlowLength) : null;
 
 			_highAt = i => High[i];
 			_lowAt  = i => Low[i];
@@ -142,10 +151,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_unreconciled    = false;
 
 			Print(string.Format(CultureInfo.InvariantCulture,
-				"FPMR loaded: {0} | tick {1} | point value ${2} | 1 pt = ${2} | session tz {3} | bar tz {4}{5}",
+				"FPMR loaded: {0} | tick {1} | point value ${2} | 1 pt = ${2} | session tz {3} | bar tz {4} | "
+			  + "bar->session shift {5} | trading-hours template tz {6} (not used for bar times){7}",
 				Instrument.FullName, _tickSize, _pointValue,
 				_sessionTz == null ? "?" : _sessionTz.Id,
 				_barTz == null ? "?" : _barTz.Id,
+				DescribeShift(),
+				TradingHoursTimeZoneName(),
 				_configError ? " | CONFIG ERROR: " + _configErrorText : string.Empty));
 		}
 
@@ -187,18 +199,52 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		private TimeZoneInfo ResolveBarTimeZone()
 		{
-			// NinjaTrader expresses bar timestamps in the zone of the data series'
-			// trading-hours template. Overridable from the inputs if your installation
-			// is configured differently.
+			// NinjaTrader expresses EVERY bar timestamp in the global display time zone
+			// (Tools > Options > General > Time zone), which falls back to the PC's zone
+			// when left unset. Time[0] is already in that zone.
+			//
+			// This must NOT read Bars.TradingHours.TimeZoneInfo. That is the zone the
+			// instrument's SESSION TEMPLATE is authored in — for CME index futures it is
+			// Central Standard Time — and it says nothing about how bar timestamps are
+			// expressed. Using it made the strategy relabel an already-local timestamp as
+			// Central and then convert it again, shifting every session by the difference
+			// between the two zones (Central -> IST is 10h30m, so evening windows fired on
+			// morning bars). Overridable from the inputs for a non-standard setup.
 			try
 			{
-				if (Bars != null && Bars.TradingHours != null && Bars.TradingHours.TimeZoneInfo != null)
-					return Bars.TradingHours.TimeZoneInfo;
+				TimeZoneInfo display = NinjaTrader.Core.Globals.GeneralOptions.TimeZoneInfo;
+				if (display != null)
+					return display;
 			}
 			catch { /* fall through */ }
 
 			return TimeZoneInfo.Local;
 		}
+
+		/// <summary>Bar zone -> session zone offset right now, so a wrong zone is obvious in the log.</summary>
+		private string DescribeShift()
+		{
+			if (_barTz == null || _sessionTz == null)
+				return "?";
+
+			DateTime now = DateTime.UtcNow;
+			TimeSpan delta = _sessionTz.GetUtcOffset(now) - _barTz.GetUtcOffset(now);
+			return (delta < TimeSpan.Zero ? "-" : "+") + delta.Duration().ToString(@"hh\:mm");
+		}
+
+		/// <summary>Reported for diagnosis only — it is deliberately NOT used to interpret bar times.</summary>
+		private string TradingHoursTimeZoneName()
+		{
+			try
+			{
+				if (Bars != null && Bars.TradingHours != null && Bars.TradingHours.TimeZoneInfo != null)
+					return Bars.TradingHours.TimeZoneInfo.Id;
+			}
+			catch { /* not fatal */ }
+
+			return "?";
+		}
+
 
 		private static TimeSpan PeriodLength(BarsPeriod period)
 		{

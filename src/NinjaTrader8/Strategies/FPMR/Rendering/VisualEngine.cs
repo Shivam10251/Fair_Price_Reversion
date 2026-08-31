@@ -4,9 +4,12 @@
 //  All chart drawing lives here so the trading logic never touches the UI.
 //
 //  RULES OBSERVED
-//  * Default is minimal: entry/exit markers and the Fair Price line only.
-//    ShowFullVisuals opens up the zone box, swing labels, CHoCH/BOS/DISP marks,
-//    the dotted broken-level line and the per-trade risk/reward boxes.
+//  * Default shows the things the strategy actually trades on: entry/exit markers,
+//    the Fair Price line and zone, the per-trade SL/TP zones and the session
+//    shading. ShowFullVisuals adds only the DIAGNOSTIC layer on top — swing
+//    labels, CHoCH/BOS/DISP marks and the dotted broken-level line.
+//  * Session shading uses RegionHighlightX, which spans the full chart height, so
+//    it needs no price bounds and never fights autoscale.
 //  * Unique tags everywhere; nothing is redrawn every bar except the OPEN trade's
 //    boxes and the live Fair Price line, which have to move.
 //  * A trade's boxes stop extending exactly on the exit bar and are never touched
@@ -15,6 +18,7 @@
 // =============================================================================
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Windows.Media;
 using NinjaTrader.Gui;
 using NinjaTrader.NinjaScript;
@@ -29,15 +33,20 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 
 		private readonly List<string>       _allTags     = new List<string>();
 		private readonly List<List<string>> _fairGroups  = new List<List<string>>();
-		private readonly List<List<string>> _tradeGroups = new List<List<string>>();
+		private readonly List<List<string>> _tradeGroups   = new List<List<string>>();
+		private readonly List<List<string>> _sessionGroups = new List<List<string>>();
 
-		public bool ShowFairPriceLine = true;
-		public bool ShowFullVisuals   = false;
-		public bool ShowRejections    = false;
-		public bool ShowStatePanel    = false;
+		public bool ShowFairPriceLine  = true;
+		public bool ShowFairPriceZone  = true;
+		public bool ShowFullVisuals    = false;
+		public bool ShowRejections     = false;
+		public bool ShowStatePanel     = false;
+		public bool ShowTradeZones     = true;
+		public bool ShowSessionShading = true;
 
 		public int FairPriceHistory = 5;
 		public int TradeHistory     = 30;
+		public int SessionHistory   = 20;
 		public int ForwardExtend    = 5;
 
 		/// <summary>
@@ -51,6 +60,14 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public Brush ShortBrush = Brushes.IndianRed;
 		public Brush FairBrush  = Brushes.Goldenrod;
 		public Brush MutedBrush = Brushes.Gray;
+
+		/// <summary>SL/TP zones get their own brushes so they stay red/green regardless of trade direction.</summary>
+		public Brush StopBrush    = Brushes.IndianRed;
+		public Brush TargetBrush  = Brushes.MediumSeaGreen;
+
+		public Brush SessionBrush = Brushes.LightBlue;
+		/// <summary>Kept low by default — the shading must never compete with the candles.</summary>
+		public int   SessionOpacity = 12;
 
 		public VisualEngine(NinjaScriptBase owner, Action<string> remover)
 		{
@@ -93,11 +110,60 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				Draw.Line(_owner, tag, false, start, _fairValue, end, _fairValue, FairBrush, DashStyleHelper.Solid, 2);
 			}
 
-			if (ShowFullVisuals && _fairUpper > _fairLower)
+			if (ShowFairPriceZone && _fairUpper > _fairLower)
 			{
 				string tag = Tag(_currentFairGroup, "FPZN" + sequence);
 				Draw.Rectangle(_owner, tag, false, start, _fairUpper, end, _fairLower, FairBrush, FairBrush, 8);
 			}
+		}
+
+		// ── Session shading ───────────────────────────────────────────────────────
+		private List<string> _currentSessionGroup;
+		private int          _sessionStartBar = -1;
+		private int          _sessionSeq;
+
+		/// <summary>Opens a shaded band on the bar the session became active.</summary>
+		public void BeginSession(int sequence, int startBarIndex)
+		{
+			if (!ShowSessionShading)
+				return;
+
+			_currentSessionGroup = new List<string>();
+			_sessionGroups.Add(_currentSessionGroup);
+			PruneGroups(_sessionGroups, SessionHistory);
+
+			_sessionSeq      = sequence;
+			_sessionStartBar = startBarIndex;
+
+			ExtendSession(CurrentBarIndex);
+		}
+
+		/// <summary>
+		/// Redraws the live band out to <paramref name="rightEdgeBarIndex"/>. Same tag every
+		/// bar, so this replaces one object rather than accumulating them.
+		/// </summary>
+		public void ExtendSession(int rightEdgeBarIndex)
+		{
+			if (!ShowSessionShading || _currentSessionGroup == null || _sessionStartBar < 0)
+				return;
+
+			int start = CurrentBarIndex - _sessionStartBar;   // older edge, larger barsAgo
+			int end   = CurrentBarIndex - rightEdgeBarIndex;
+
+			if (start < end)
+				return;
+
+			int opacity = Math.Max(1, Math.Min(100, SessionOpacity));
+			string tag  = Tag(_currentSessionGroup, "SESS" + _sessionSeq);
+			Draw.RegionHighlightX(_owner, tag, start, end, SessionBrush, SessionBrush, opacity);
+		}
+
+		/// <summary>Freezes the band on the last in-session bar and stops extending it.</summary>
+		public void EndSession(int lastInSessionBarIndex)
+		{
+			ExtendSession(lastInSessionBarIndex);
+			_currentSessionGroup = null;
+			_sessionStartBar     = -1;
 		}
 
 		// ── Structure ─────────────────────────────────────────────────────────────
@@ -172,10 +238,16 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			UpdateTrade(t, 0);
 		}
 
-		/// <summary>Extends the open trade's boxes to <paramref name="barsAgoRightEdge"/> (0 = current bar).</summary>
+		/// <summary>
+		/// Extends the open trade's SL and TP zones to <paramref name="barsAgoRightEdge"/>
+		/// (0 = current bar). Each zone is a shaded box from the entry price to the level,
+		/// plus a dashed line and a price label on the level itself.
+		/// Gated on ShowTradeZones, NOT ShowFullVisuals — the zones are the point of the
+		/// chart, so they stay on when the diagnostic clutter is off.
+		/// </summary>
 		public void UpdateTrade(TradeRecord t, int barsAgoRightEdge)
 		{
-			if (!ShowFullVisuals)
+			if (!ShowTradeZones)
 				return;
 
 			List<string> group;
@@ -186,13 +258,34 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			if (left < barsAgoRightEdge)
 				return;
 
+			// ── Stop-loss zone: entry → stop ──────────────────────────────────────
 			string riskTag = Tag(group, "RK" + t.SignalName);
 			Draw.Rectangle(_owner, riskTag, false, left, Math.Max(t.SignalPrice, t.StopPrice),
-			               barsAgoRightEdge, Math.Min(t.SignalPrice, t.StopPrice), ShortBrush, ShortBrush, 10);
+			               barsAgoRightEdge, Math.Min(t.SignalPrice, t.StopPrice), StopBrush, StopBrush, 10);
 
+			string slLineTag = Tag(group, "SL" + t.SignalName);
+			Draw.Line(_owner, slLineTag, false, left, t.StopPrice, barsAgoRightEdge, t.StopPrice,
+			          StopBrush, DashStyleHelper.Dash, 2);
+
+			string slTxtTag = Tag(group, "SLT" + t.SignalName);
+			Draw.Text(_owner, slTxtTag, Label("SL", t.StopPrice), barsAgoRightEdge, t.StopPrice, StopBrush);
+
+			// ── Take-profit zone: entry → target ──────────────────────────────────
 			string rewardTag = Tag(group, "RW" + t.SignalName);
 			Draw.Rectangle(_owner, rewardTag, false, left, Math.Max(t.SignalPrice, t.TargetPrice),
-			               barsAgoRightEdge, Math.Min(t.SignalPrice, t.TargetPrice), LongBrush, LongBrush, 10);
+			               barsAgoRightEdge, Math.Min(t.SignalPrice, t.TargetPrice), TargetBrush, TargetBrush, 10);
+
+			string tpLineTag = Tag(group, "TP" + t.SignalName);
+			Draw.Line(_owner, tpLineTag, false, left, t.TargetPrice, barsAgoRightEdge, t.TargetPrice,
+			          TargetBrush, DashStyleHelper.Dash, 2);
+
+			string tpTxtTag = Tag(group, "TPT" + t.SignalName);
+			Draw.Text(_owner, tpTxtTag, Label("TP", t.TargetPrice), barsAgoRightEdge, t.TargetPrice, TargetBrush);
+		}
+
+		private static string Label(string prefix, double price)
+		{
+			return prefix + " " + price.ToString("0.#####", CultureInfo.InvariantCulture);
 		}
 
 		public void CloseTrade(TradeRecord t, int barsAgoExit)
@@ -280,8 +373,11 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			_transient.Clear();
 			_fairGroups.Clear();
 			_tradeGroups.Clear();
+			_sessionGroups.Clear();
 			_tradeTags.Clear();
-			_currentFairGroup = null;
+			_currentFairGroup    = null;
+			_currentSessionGroup = null;
+			_sessionStartBar     = -1;
 		}
 	}
 }

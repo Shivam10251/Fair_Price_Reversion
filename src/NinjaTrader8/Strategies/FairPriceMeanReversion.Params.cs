@@ -8,7 +8,11 @@
 // =============================================================================
 #region Using declarations
 using System;
+using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Windows.Media;
+using System.Xml.Serialization;
+using NinjaTrader.Gui;
 using NinjaTrader.NinjaScript.Strategies.FPMR;
 #endregion
 
@@ -30,10 +34,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		// ── 1 · SESSIONS ──────────────────────────────────────────────────────────
 		[NinjaScriptProperty]
-		[Display(Name = "Session timezone", Description = "IANA id (America/New_York) or a Windows id. All session windows and the news file are evaluated here.", GroupName = G_SES, Order = 0)]
+		[TypeConverter(typeof(TimeZoneOptionConverter))]
+		[Display(Name = "Session timezone", Description = "Pick from the list or type any id TimeZoneRegistry understands: an IANA id (America/New_York, Asia/Kolkata), a Windows id (India Standard Time), or the shorthand IST. All session windows and the news file are evaluated here.", GroupName = G_SES, Order = 0)]
 		public string SessionTimeZoneId { get; set; }
 
 		[NinjaScriptProperty]
+		[TypeConverter(typeof(TimeZoneOptionConverter))]
 		[Display(Name = "Bar timezone override", Description = "Leave blank to assume bar timestamps are in the data series' trading-hours timezone. Set explicitly if your NinjaTrader time display is configured differently.", GroupName = G_SES, Order = 1)]
 		public string BarTimeZoneOverrideId { get; set; }
 
@@ -225,6 +231,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public string NewsFilePath { get; set; }
 
 		[NinjaScriptProperty]
+		[TypeConverter(typeof(TimeZoneOptionConverter))]
 		[Display(Name = "News file timezone", Description = "Used only for rows WITHOUT an explicit UTC offset (i.e. every CSV row). ForexFactory's default profile is America/New_York.", GroupName = G_NEWS, Order = 2)]
 		public string NewsFileTimeZoneId { get; set; }
 
@@ -255,21 +262,29 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		// ── 7 · FILTERS ───────────────────────────────────────────────────────────
 		[NinjaScriptProperty]
-		[Display(Name = "Use EMA filter", Description = "Long needs EMA1 > EMA2, short needs EMA1 < EMA2. Off = zero effect.", GroupName = G_FLT, Order = 0)]
+		[Display(Name = "Use EMA filter", Description = "Master switch. BOTH EMAs enabled = crossover rule (long needs EMA1 > EMA2). ONE enabled = price-vs-EMA rule (long needs close above it). Neither = no effect.", GroupName = G_FLT, Order = 0)]
 		public bool UseEmaFilter { get; set; }
 
 		[NinjaScriptProperty]
+		[Display(Name = "Enable EMA 1", Description = "Use EMA 1 in the filter. On its own it becomes a price-vs-EMA1 trend filter.", GroupName = G_FLT, Order = 1)]
+		public bool UseEma1 { get; set; }
+
+		[NinjaScriptProperty]
 		[Range(1, int.MaxValue)]
-		[Display(Name = "EMA 1 length", GroupName = G_FLT, Order = 1)]
+		[Display(Name = "EMA 1 length", GroupName = G_FLT, Order = 2)]
 		public int EmaFastLength { get; set; }
 
 		[NinjaScriptProperty]
+		[Display(Name = "Enable EMA 2", Description = "Use EMA 2 in the filter. On its own it becomes a price-vs-EMA2 trend filter.", GroupName = G_FLT, Order = 3)]
+		public bool UseEma2 { get; set; }
+
+		[NinjaScriptProperty]
 		[Range(1, int.MaxValue)]
-		[Display(Name = "EMA 2 length", GroupName = G_FLT, Order = 2)]
+		[Display(Name = "EMA 2 length", GroupName = G_FLT, Order = 4)]
 		public int EmaSlowLength { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Use VWAP filter", Description = "Session-anchored. Long needs close above, short needs close below. Off = zero effect.", GroupName = G_FLT, Order = 3)]
+		[Display(Name = "Use VWAP filter", Description = "Session-anchored. Long needs close above, short needs close below. Off = zero effect.", GroupName = G_FLT, Order = 5)]
 		public bool UseVwapFilter { get; set; }
 
 		// ── 8 · VISUALISATION ─────────────────────────────────────────────────────
@@ -278,13 +293,46 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public bool ShowFairPriceLine { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Show full visuals", Description = "Zone box, HH/HL/LH/LL labels, CHoCH/BOS/DISP marks, broken-level line and risk/reward boxes.", GroupName = G_VIS, Order = 1)]
-		public bool ShowFullVisuals { get; set; }
+		[Display(Name = "Show Fair Price zone", Description = "The +/- Zone distance band around Fair Price — the region that decides above / below / inside.", GroupName = G_VIS, Order = 1)]
+		public bool ShowFairPriceZone { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Show SL / TP zones", Description = "Shaded stop-loss and take-profit zones on every trade, with a dashed level line and price label. Independent of \"Show full visuals\".", GroupName = G_VIS, Order = 2)]
+		public bool ShowTradeZones { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Shade session windows", Description = "Highlights each active session window across the full chart height.", GroupName = G_VIS, Order = 3)]
+		public bool ShowSessionShading { get; set; }
+
+		[XmlIgnore]
+		[Display(Name = "Session shading colour", GroupName = G_VIS, Order = 4)]
+		public Brush SessionShadingBrush { get; set; }
+
+		[Browsable(false)]
+		public string SessionShadingBrushSerialize
+		{
+			get { return Serialize.BrushToString(SessionShadingBrush); }
+			set { SessionShadingBrush = Serialize.StringToBrush(value); }
+		}
+
+		[NinjaScriptProperty]
+		[Range(1, 100)]
+		[Display(Name = "Session shading opacity", Description = "1-100. Keep it low so the shading never competes with the candles.", GroupName = G_VIS, Order = 5)]
+		public int SessionShadingOpacity { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(1, 200)]
-		[Display(Name = "Trade drawings kept", GroupName = G_VIS, Order = 2)]
+		[Display(Name = "Session shadings kept", GroupName = G_VIS, Order = 6)]
+		public int SessionShadingHistory { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(1, 200)]
+		[Display(Name = "Trade drawings kept", GroupName = G_VIS, Order = 7)]
 		public int TradeDrawingHistory { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Show full visuals (diagnostics)", Description = "Adds the structure diagnostic layer: HH/HL/LH/LL swing labels, CHoCH/BOS/DISP marks and the dotted broken-level line. Slow — leave off for real backtests.", GroupName = G_VIS, Order = 8)]
+		public bool ShowFullVisuals { get; set; }
 
 		// ── 9 · BACKTEST FIDELITY ─────────────────────────────────────────────────
 		[NinjaScriptProperty]
@@ -364,13 +412,21 @@ namespace NinjaTrader.NinjaScript.Strategies
 			NewsTradingStart      = FpNewsTradingStart.AfterSessionOpen;
 
 			UseEmaFilter   = false;
+			UseEma1        = true;
 			EmaFastLength  = 9;
+			UseEma2        = true;
 			EmaSlowLength  = 21;
 			UseVwapFilter  = false;
 
-			ShowFairPriceLine   = true;
-			ShowFullVisuals     = false;
-			TradeDrawingHistory = 30;
+			ShowFairPriceLine     = true;
+			ShowFairPriceZone     = true;
+			ShowFullVisuals       = false;
+			ShowTradeZones        = true;
+			ShowSessionShading    = true;
+			SessionShadingBrush   = Brushes.LightBlue;
+			SessionShadingOpacity = 12;
+			SessionShadingHistory = 20;
+			TradeDrawingHistory   = 30;
 
 			UseTickPrecision = true;
 

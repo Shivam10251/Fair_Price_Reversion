@@ -78,6 +78,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private int  _ambiguousCount;
 		private int  _uid;
 		private int  _fairSeq;
+		private int  _sessionSeq;
 		private int  _fairBarIndex = -1;
 		private bool _unreconciled;
 		private string _lastExitText = "-";
@@ -182,7 +183,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 				_tradesSession   = 0;
 				_tradingStartBar = CurrentBar;
 				_xtp.OnSessionStart();
+				_viz.BeginSession(++_sessionSeq, CurrentBar);
 			}
+
+			// The band stops on the last bar that was still inside the window, so it never
+			// bleeds past the session close.
+			if (sessionEnd)
+				_viz.EndSession(CurrentBar - 1);
+			else if (_effSession != 0)
+				_viz.ExtendSession(CurrentBar);
 
 			_warmupDone = _tradingStartBar >= 0 && (CurrentBar - _tradingStartBar) >= MinBarsBeforeFirstTrade;
 

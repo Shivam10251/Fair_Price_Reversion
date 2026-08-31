@@ -13,6 +13,7 @@
 // =============================================================================
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 
 namespace NinjaTrader.NinjaScript.Strategies.FPMR
 {
@@ -46,6 +47,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			{ "Europe/Zurich",       "W. Europe Standard Time"    },
 			{ "Asia/Kolkata",        "India Standard Time"        },
 			{ "Asia/Calcutta",       "India Standard Time"        },
+			{ "IST",                 "India Standard Time"        },
 			{ "Asia/Tokyo",          "Tokyo Standard Time"        },
 			{ "Asia/Shanghai",       "China Standard Time"        },
 			{ "Asia/Hong_Kong",      "China Standard Time"        },
@@ -99,6 +101,32 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			// ConvertTime does not reinterpret them against the machine's zone.
 			DateTime unspecified = DateTime.SpecifyKind(barTime, DateTimeKind.Unspecified);
 			return TimeZoneInfo.ConvertTime(unspecified, source, target);
+		}
+	}
+
+	/// <summary>
+	/// Turns the free-text timezone inputs into an editable drop-down in the strategy
+	/// properties grid. The list is <see cref="TimeZoneRegistry.Options"/>; because
+	/// GetStandardValuesExclusive is false, any other id TimeZoneRegistry.Resolve
+	/// understands (America/Denver, Asia/Dubai, a raw Windows id, IST) can still be
+	/// typed in by hand, and existing saved templates keep working.
+	/// </summary>
+	public class TimeZoneOptionConverter : StringConverter
+	{
+		public override bool GetStandardValuesSupported(ITypeDescriptorContext context)
+		{
+			return true;
+		}
+
+		// Editable, not a closed list — hand-typed ids remain valid.
+		public override bool GetStandardValuesExclusive(ITypeDescriptorContext context)
+		{
+			return false;
+		}
+
+		public override StandardValuesCollection GetStandardValues(ITypeDescriptorContext context)
+		{
+			return new StandardValuesCollection(TimeZoneRegistry.Options);
 		}
 	}
 }

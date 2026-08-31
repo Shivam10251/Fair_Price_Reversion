@@ -82,8 +82,58 @@ namespace NinjaTrader.NinjaScript.Strategies
 			SubmitEntry(dir, brk.Event, entry, stop, risk, sizing);
 		}
 
-		private bool EmaOkLong()   { return !UseEmaFilter || _emaFast[0] > _emaSlow[0]; }
-		private bool EmaOkShort()  { return !UseEmaFilter || _emaFast[0] < _emaSlow[0]; }
+		/// <summary>
+		/// EMA gate. Each leg is independent:
+		///   both legs on  -> crossover rule, long needs EMA1 above EMA2;
+		///   one leg on    -> price-vs-EMA rule, long needs the close above that EMA;
+		///   no leg on     -> no constraint, same as the master switch being off.
+		/// A disabled leg is null, so the shape of the test follows what was built.
+		/// </summary>
+		private bool EmaOkLong()  { return EmaOk(true); }
+		private bool EmaOkShort() { return EmaOk(false); }
+
+		private bool EmaOk(bool isLong)
+		{
+			if (!UseEmaFilter)
+				return true;
+
+			bool one = _emaFast != null;
+			bool two = _emaSlow != null;
+
+			if (one && two)
+				return isLong ? _emaFast[0] > _emaSlow[0] : _emaFast[0] < _emaSlow[0];
+
+			if (one)
+				return isLong ? Close[0] > _emaFast[0] : Close[0] < _emaFast[0];
+
+			if (two)
+				return isLong ? Close[0] > _emaSlow[0] : Close[0] < _emaSlow[0];
+
+			return true;
+		}
+
+		private string DescribeEmaFilter()
+		{
+			if (!UseEmaFilter)
+				return "OFF";
+
+			bool one = _emaFast != null;
+			bool two = _emaSlow != null;
+
+			if (one && two)
+				return "EMA" + EmaFastLength + " vs EMA" + EmaSlowLength + " · "
+				     + (_emaFast[0] > _emaSlow[0] ? "bull (longs ok)" : "bear (shorts ok)");
+
+			if (one)
+				return "close vs EMA" + EmaFastLength + " · "
+				     + (Close[0] > _emaFast[0] ? "above (longs ok)" : "below (shorts ok)");
+
+			if (two)
+				return "close vs EMA" + EmaSlowLength + " · "
+				     + (Close[0] > _emaSlow[0] ? "above (longs ok)" : "below (shorts ok)");
+
+			return "ON but no EMA enabled — no effect";
+		}
 		private bool VwapOkLong()  { return !UseVwapFilter || !_vwap.HasValue || Close[0] > _vwap.Value; }
 		private bool VwapOkShort() { return !UseVwapFilter || !_vwap.HasValue || Close[0] < _vwap.Value; }
 
@@ -247,7 +297,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		}
 
 		protected override void OnExecutionUpdate(Execution execution, string executionId, double price, int quantity,
-		                                          MarketPosition marketPosition, string orderId, bool isExit)
+		                                          MarketPosition marketPosition, string orderId, DateTime time)
 		{
 			if (execution == null || execution.Order == null)
 				return;
@@ -369,8 +419,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			sb.AppendLine("Last exit     : " + _lastExitText);
 			sb.AppendLine("Last reject   : " + _lastRejectText);
 			sb.AppendLine("Same-bar hits : " + _ambiguousCount + "  (" + SameBarPriority + ")");
-			sb.AppendLine("EMA filter    : " + (!UseEmaFilter ? "OFF"
-				: _emaFast[0] > _emaSlow[0] ? "bull (longs ok)" : "bear (shorts ok)"));
+			sb.AppendLine("EMA filter    : " + DescribeEmaFilter());
 			sb.AppendLine("VWAP filter   : " + (!UseVwapFilter ? "OFF"
 				: !_vwap.HasValue ? "no volume data" : Close[0] > _vwap.Value ? "above (longs ok)" : "below (shorts ok)"));
 			sb.AppendLine("FP-TP override: " + (!UseExtendedTp ? "OFF"
