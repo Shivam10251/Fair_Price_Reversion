@@ -52,6 +52,28 @@ namespace NinjaTrader.NinjaScript.Strategies.VPS
 
 		public bool AnyHighSide { get { return HasProfile || HasRange; } }
 
+		/// <summary>
+		/// Takes a value snapshot of another set. This is what FREEZES the levels at
+		/// the range close: the accumulating set carries on building the next
+		/// profile, while the frozen copy the strategy trades and draws cannot move
+		/// until the next range session closes.
+		/// </summary>
+		public void CopyFrom(VpsLevelSet other)
+		{
+			if (other == null)
+				return;
+
+			Vah            = other.Vah;
+			Poc            = other.Poc;
+			Val            = other.Val;
+			Rh             = other.Rh;
+			Rl             = other.Rl;
+			HasProfile     = other.HasProfile;
+			HasRange       = other.HasRange;
+			ProfileSession = other.ProfileSession;
+			RangeSession   = other.RangeSession;
+		}
+
 		public double PriceOf(VpsLevel id)
 		{
 			switch (id)

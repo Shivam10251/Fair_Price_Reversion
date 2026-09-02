@@ -22,14 +22,6 @@ namespace NinjaTrader.NinjaScript.Strategies.VPS
 		Rl     // Range Low         — low-side entry level
 	}
 
-	/// <summary>Which confirmation produced the entry. Reporting only.</summary>
-	public enum VpsConfirmation
-	{
-		None,
-		Rejection,  // Method A — the sweep candle closed back through the level
-		Engulfing   // Method B — a following candle engulfed at the swept level
-	}
-
 	/// <summary>
 	/// Deterministic winner when two opposite-side targets sit at EXACTLY the same
 	/// distance from the entry. Required by section 13 of the specification and
@@ -48,13 +40,5 @@ namespace NinjaTrader.NinjaScript.Strategies.VPS
 		Fixed,
 		/// <summary>Sized so the dollar risk to the sweep-candle stop lands near a target.</summary>
 		RiskBased
-	}
-
-	/// <summary>Which confirmation methods are allowed to fire.</summary>
-	public enum VpsConfirmMode
-	{
-		RejectionOrEngulfing,  // either one, as specified
-		RejectionOnly,
-		EngulfingOnly
 	}
 }

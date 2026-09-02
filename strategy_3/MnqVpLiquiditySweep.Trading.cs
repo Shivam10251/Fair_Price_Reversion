@@ -54,7 +54,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 		// ── Setup evaluation ──────────────────────────────────────────────────────
 		private void EvaluateSetups(DateTime barOpenInBarZone)
 		{
-			if (!_levels.AnyHighSide)
+			// Everything below reads the FROZEN set only. The staging set may be
+			// mid-profile; these numbers were fixed at the range close.
+			if (!_frozen.AnyHighSide)
 				return;
 
 			_diagBarsWithLevels++;
@@ -86,13 +88,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
 		}
 
-		/// <summary>Detects a fresh sweep of one level and tests both confirmations.</summary>
+		/// <summary>Detects a fresh sweep of one level and tests it for confirmation.</summary>
 		private bool TryLevel(VpsLevel level, int direction, bool canEnter)
 		{
-			if (!_levels.IsValid(level))
+			if (!_frozen.IsValid(level))
 				return false;
 
-			double levelPrice = _levels.PriceOf(level);
+			double levelPrice = _frozen.PriceOf(level);
 
 			VpsArmedSweep fresh = _sweeps.DetectSweep(level, direction, levelPrice,
 				High[0], Low[0], High[1], Low[1], CurrentBar, Time[0]);
@@ -108,39 +110,36 @@ namespace NinjaTrader.NinjaScript.Strategies
 					Low[0].ToString(_tickFormat, CultureInfo.InvariantCulture),
 					Close[0].ToString(_tickFormat, CultureInfo.InvariantCulture)));
 
-			if (fresh != null && ShowVisuals)
-				Draw.Text(this, "SW" + CurrentBar + level, level.ToString(), 0,
-					direction < 0 ? High[0] + 4 * _tickSize : Low[0] - 4 * _tickSize,
-					direction < 0 ? Brushes.OrangeRed : Brushes.MediumSeaGreen);
-
 			VpsArmedSweep armed = _sweeps.ArmedFor(level);
 			if (armed == null)
 				return false;
 
-			// ---- Method A: the sweep candle rejected the level -----------------
-			bool rejectionAllowed = ConfirmMode != VpsConfirmMode.EngulfingOnly;
+			// ---- Confirmation: the rejection candle ----------------------------
+			// One rule. This candle must close RED and below the swept level for a
+			// short, GREEN and above it for a long. The sweep candle itself qualifies
+			// when it does both, so a wick through the level that closes red back
+			// inside is taken on the spot.
+			bool onSweepBar = armed.SweepBar == CurrentBar;
 
-			if (rejectionAllowed && armed.SweepBar == CurrentBar
-			    && VpsSweepTracker.IsRejection(direction, Close[0], levelPrice))
-			{
-				return Confirm(armed, VpsConfirmation.Rejection, canEnter);
-			}
+			// A candle later in the window must still be trading around the level —
+			// otherwise any red candle anywhere in the window would confirm. The sweep
+			// candle traded through the level by definition and needs no such test.
+			if (!onSweepBar && !_sweeps.IsNearLevel(direction, armed.LevelPrice, High[0], Low[0]))
+				return false;
 
-			// ---- Method B: an engulfing candle after the sweep -----------------
-			bool engulfAllowed = ConfirmMode != VpsConfirmMode.RejectionOnly;
+			if (!VpsSweepTracker.IsColourRejection(direction, Open[0], Close[0], armed.LevelPrice))
+				return false;
 
-			if (engulfAllowed && CurrentBar > armed.SweepBar
-			    && _sweeps.IsEngulfingConfirmation(direction, armed.LevelPrice,
-			           Open[0], High[0], Low[0], Close[0], Open[1], Close[1]))
-			{
-				return Confirm(armed, VpsConfirmation.Engulfing, canEnter);
-			}
+			string how = onSweepBar
+				? "the sweep candle itself"
+				: string.Format(CultureInfo.InvariantCulture, "{0} candle(s) after the sweep",
+					CurrentBar - armed.SweepBar);
 
-			return false;
+			return Confirm(armed, how, canEnter);
 		}
 
 		/// <summary>Turns a confirmed sweep into an order, or explains why it was skipped.</summary>
-		private bool Confirm(VpsArmedSweep armed, VpsConfirmation how, bool canEnter)
+		private bool Confirm(VpsArmedSweep armed, string how, bool canEnter)
 		{
 			// The sweep is consumed either way: one liquidity event, one decision.
 			_sweeps.Clear(armed.Level);
@@ -154,7 +153,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 				if (VerboseLogging)
 					Print(string.Format(CultureInfo.InvariantCulture,
-						"{0}  SKIP {1} {2} - {3}.",
+						"{0}  SKIP {1} (confirmed by {2}) — {3}.",
 						Time[0], armed.Level, how,
 						!_gateWindow ? "outside the entry window"
 						: !_gateDayCap ? "the daily trade cap is reached"
@@ -165,7 +164,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			double entry = Close[0];
 			int    dir   = armed.Direction;
 
-			// ---- initial stop: the SWEEP candle's extreme, never the engulfing
+			// ---- initial stop: the SWEEP candle's extreme, never the confirming
 			//      candle's, unless they are the same candle ---------------------
 			double buffer = Math.Max(0.0, StopBufferTicks) * _tickSize;
 			double stop   = Instrument.MasterInstrument.RoundToTickSize(
@@ -178,13 +177,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 				if (VerboseLogging)
 					Print(string.Format(CultureInfo.InvariantCulture,
-						"{0}  SKIP {1} {2} — the sweep candle's extreme is less than a tick from the entry.",
+						"{0}  SKIP {1} (confirmed by {2}) — the sweep candle's extreme is less than a tick from the entry.",
 						Time[0], armed.Level, how));
 				return false;
 			}
 
 			// ---- dynamic maximum-distance target ------------------------------
-			VpsTargetChoice target = _levels.SelectTarget(dir, entry,
+			VpsTargetChoice target = _frozen.SelectTarget(dir, entry,
 				MinTargetDistanceTicks * _tickSize, TargetTieBreak);
 
 			if (!target.Found)
@@ -193,7 +192,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 				// Section 13: no valid opposite-side target means no trade.
 				Print(string.Format(CultureInfo.InvariantCulture,
-					"{0}  SKIP {1} {2} — {3}. No entry taken.",
+					"{0}  SKIP {1} (confirmed by {2}) — {3}. No entry taken.",
 					Time[0], armed.Level, how, target.Rejection));
 				return false;
 			}
@@ -206,7 +205,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				_diagSkipSize++;
 
 				Print(string.Format(CultureInfo.InvariantCulture,
-					"{0}  SKIP {1} {2} — {3}", Time[0], armed.Level, how, sizeReason));
+					"{0}  SKIP {1} (confirmed by {2}) — {3}", Time[0], armed.Level, how, sizeReason));
 				return false;
 			}
 
@@ -215,7 +214,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			return true;
 		}
 
-		private void SubmitEntry(VpsArmedSweep armed, VpsConfirmation how, int dir, double entry,
+		private void SubmitEntry(VpsArmedSweep armed, string how, int dir, double entry,
 		                         double stop, VpsTargetChoice target, int quantity, double riskPoints)
 		{
 			_tradeSeq++;
@@ -233,8 +232,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_breakEvenArmed  = false;
 			_inTrade         = true;
 
-			// Intermediate lines are fixed at signal time from the levels in force.
-			_intermediates = _levels.IntermediateLines(_entryLine, _targetLine, entry, target.Price);
+			// Intermediate lines come from the frozen set, so they are the same lines
+			// that were on the chart when the window opened.
+			_intermediates = _frozen.IntermediateLines(_entryLine, _targetLine, entry, target.Price);
 
 			// Brackets must be registered BEFORE the entry order they belong to.
 			SetStopLoss(signal, CalculationMode.Price, stop, false);
@@ -252,7 +252,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				names += (i > 0 ? ", " : string.Empty) + _intermediates[i].Id;
 
 			Print(string.Format(CultureInfo.InvariantCulture,
-				"{0}  ENTRY #{1} {2} {3} x{4} @ {5} | from {6} ({7}) | SL {8} (sweep candle {9:HH:mm}) | "
+				"{0}  ENTRY #{1} {2} {3} x{4} @ {5} | from {6}, confirmed by {7} | SL {8} (sweep candle {9:HH:mm}) | "
 			  + "TP {10} at {11}, {12} pts — the farther of the two | BE lines: {13} | risk {14:0.##} pts",
 				Time[0], _tradeSeq, dir < 0 ? "SHORT" : "LONG", Instrument.MasterInstrument.Name, quantity,
 				entry.ToString(_tickFormat, CultureInfo.InvariantCulture),
@@ -435,8 +435,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 		/// </summary>
 		private bool InTradingWindow(DateTime barOpenInBarZone)
 		{
-			// Floor: the range must have produced RH/RL, and we must be past it.
-			if (!_levels.HasRange || _inRange)
+			// Floor: the range must have closed and frozen its levels, and we must be
+			// past it.
+			if (!_frozen.HasRange || _inRange)
 				return false;
 
 			if (_entryCutoff == null || !_entryCutoff.IsValid)
@@ -447,25 +448,77 @@ namespace NinjaTrader.NinjaScript.Strategies
 		}
 
 		// ── Visuals ───────────────────────────────────────────────────────────────
-		private void DrawLevels()
-		{
-			if (_levels.HasProfile)
-			{
-				DrawLevel("VAH", _levels.Vah, Brushes.Silver);
-				DrawLevel("POC", _levels.Poc, Brushes.DarkKhaki);
-				DrawLevel("VAL", _levels.Val, Brushes.Silver);
-			}
+		//
+		//  ONE LINE AND ONE LABEL PER LEVEL PER WINDOW.
+		//
+		//  The tags are keyed on the freeze occurrence, not on the bar. That is the
+		//  whole trick: a tag reused on every bar UPDATES the same drawing object
+		//  instead of adding another, so the line simply extends rightwards as the
+		//  window progresses and the label is written exactly once, at the freeze.
+		//  When the next range closes the occurrence changes, the previous window's
+		//  drawings are left frozen where they ended, and a fresh set begins.
+		//
+		//  Sweeps are deliberately not marked. A level can be poked many times in a
+		//  session and a mark per poke is what buried the chart in repeated text.
 
-			if (_levels.HasRange)
+		/// <summary>The freeze occurrence, as a tag-safe key.</summary>
+		private string FreezeStamp()
+		{
+			return _freezeOccurrence.ToString("yyyyMMddHHmm", CultureInfo.InvariantCulture);
+		}
+
+		private static string LevelName(VpsLevel id)
+		{
+			switch (id)
 			{
-				DrawLevel("RH", _levels.Rh, Brushes.Teal);
-				DrawLevel("RL", _levels.Rl, Brushes.Teal);
+				case VpsLevel.Vah: return "VAH";
+				case VpsLevel.Poc: return "POC";
+				case VpsLevel.Val: return "VAL";
+				case VpsLevel.Rh:  return "RH";
+				case VpsLevel.Rl:  return "RL";
+				default:           return id.ToString();
 			}
 		}
 
-		private void DrawLevel(string tag, double price, Brush brush)
+		private static Brush LevelBrush(VpsLevel id)
 		{
-			Draw.Line(this, tag, false, 30, price, -5, price, brush, DashStyleHelper.Solid, 1);
+			switch (id)
+			{
+				case VpsLevel.Poc: return Brushes.DarkKhaki;
+				case VpsLevel.Rh:
+				case VpsLevel.Rl:  return Brushes.Teal;
+				default:           return Brushes.Silver;
+			}
+		}
+
+		/// <summary>
+		/// Writes each frozen level's name once, at the bar the levels were fixed on.
+		/// Called only from FreezeLevels, so it can never repeat within a window.
+		/// </summary>
+		private void LabelFrozenLevels()
+		{
+			string stamp = FreezeStamp();
+
+			foreach (VpsLevelValue v in _frozen.All())
+				Draw.Text(this, "VPSTXT" + stamp + v.Id, LevelName(v.Id), 0,
+					v.Price + 2 * _tickSize, LevelBrush(v.Id));
+		}
+
+		/// <summary>
+		/// Extends this window's level lines to the current bar. Same tags every bar,
+		/// so this updates five objects rather than creating any.
+		/// </summary>
+		private void DrawLevels()
+		{
+			if (_freezeTime == DateTime.MinValue)
+				return;
+
+			string stamp = FreezeStamp();
+
+			foreach (VpsLevelValue v in _frozen.All())
+				Draw.Line(this, "VPSLN" + stamp + v.Id, false,
+					_freezeTime, v.Price, Time[0], v.Price,
+					LevelBrush(v.Id), DashStyleHelper.Solid, 1);
 		}
 	}
 }

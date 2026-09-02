@@ -15,9 +15,9 @@
 //  (specification section 13, "do not generate duplicate trades").
 //
 //  THE STOP BELONGS TO THE SWEEP CANDLE
-//  The armed record keeps the SWEEP candle's own extreme. When an engulfing
-//  candle later confirms the setup, the stop still comes from the candle that
-//  actually did the sweeping, exactly as section 3 requires.
+//  The armed record keeps the SWEEP candle's own extreme. When a LATER candle
+//  confirms the setup, the stop still comes from the candle that actually did
+//  the sweeping, exactly as section 3 requires.
 // =============================================================================
 using System;
 
@@ -122,47 +122,33 @@ namespace NinjaTrader.NinjaScript.Strategies.VPS
 		}
 
 		/// <summary>
-		/// Method A — the sweep candle itself rejected the level by closing back
-		/// through it. Resolved on the sweep candle, so it needs no window.
+		/// THE confirmation. After a level has been swept, the setup is confirmed by
+		/// a candle that does BOTH of these:
+		///
+		///   * closes in the rejecting COLOUR — red (close &lt; open) for a high-side
+		///     sweep, green (close &gt; open) for a low-side sweep, and
+		///   * closes back THROUGH the swept level — below it on the high side,
+		///     above it on the low side.
+		///
+		/// The colour alone is not enough: a red candle that still closes above VAH
+		/// is continuation, not rejection. Closing back through alone is not enough
+		/// either: a green candle closing just under VAH is buyers holding the level.
+		/// Both together are the rejection the specification describes.
+		///
+		/// The sweep candle itself qualifies when it satisfies both, so a candle that
+		/// wicks through the level and closes red back inside is confirmed on the
+		/// spot rather than waiting a bar.
 		/// </summary>
-		public static bool IsRejection(int direction, double close, double levelPrice)
+		public static bool IsColourRejection(int direction, double open, double close, double levelPrice)
 		{
-			return direction < 0 ? close < levelPrice : close > levelPrice;
-		}
-
-		/// <summary>
-		/// Method B — a standard engulfing candle, required to have traded at or
-		/// around the swept level so an unrelated pattern elsewhere cannot fire it.
-		/// </summary>
-		public bool IsEngulfingConfirmation(int direction, double levelPrice,
-		                                    double open, double high, double low, double close,
-		                                    double prevOpen, double prevClose)
-		{
-			if (!IsNearLevel(direction, levelPrice, high, low))
-				return false;
-
-			if (direction < 0)
-			{
-				// Bearish engulfing: previous candle up, this one down, body engulfs.
-				bool prevBull = prevClose > prevOpen;
-				bool thisBear = close < open;
-				bool engulfs  = open >= prevClose && close <= prevOpen;
-
-				return prevBull && thisBear && engulfs;
-			}
-			else
-			{
-				bool prevBear = prevClose < prevOpen;
-				bool thisBull = close > open;
-				bool engulfs  = open <= prevClose && close >= prevOpen;
-
-				return prevBear && thisBull && engulfs;
-			}
+			return direction < 0
+				? close < open && close < levelPrice
+				: close > open && close > levelPrice;
 		}
 
 		/// <summary>
 		/// "At/around the swept level": the candle must have reached back into a band
-		/// around it, rather than merely printing an engulfing pattern somewhere else.
+		/// around it, rather than merely printing a red or green candle somewhere else.
 		/// </summary>
 		public bool IsNearLevel(int direction, double levelPrice, double high, double low)
 		{

@@ -2,10 +2,10 @@
 //  MNQ VOLUME PROFILE LIQUIDITY SWEEP  —  NinjaTrader 8
 //  Part 2 of 3 — lifecycle and per-bar orchestration.
 //
-//  HIGH-SIDE SWEEP -> SHORT     VAH or RH swept, bearish rejection OR bearish
-//                               engulfing, short.
-//  LOW-SIDE SWEEP  -> LONG      VAL or RL swept, bullish rejection OR bullish
-//                               engulfing, long.
+//  HIGH-SIDE SWEEP -> SHORT     VAH or RH swept, then a RED candle that closes
+//                               back BELOW the swept level. Short.
+//  LOW-SIDE SWEEP  -> LONG      VAL or RL swept, then a GREEN candle that closes
+//                               back ABOVE the swept level. Long.
 //  TARGET IS DYNAMIC            The farthest qualifying opposite-side level from
 //                               the actual entry price. Never a fixed R.
 //  BREAK-EVEN                   Any OTHER indicator line between entry and
@@ -19,11 +19,16 @@
 //
 //  WHEN THE LEVELS BECOME VALID — this drives everything downstream.
 //  The Pine indicator computes VAH/POC/VAL only when the profile session ENDS
-//  (doCalc = vpEnd or barstate.islast). It therefore never trades against a
-//  half-built profile, and neither does this strategy: the levels in force are
-//  always those of the most recently COMPLETED profile session, and RH/RL those
-//  of the most recently COMPLETED range. Before the first of each has closed
-//  there are no levels and no trades are possible.
+//  (doCalc = vpEnd or barstate.islast), so nothing is ever measured against a
+//  half-built profile.
+//
+//  This strategy goes one step further. All five levels are FROZEN at the moment
+//  the RANGE session closes and cannot move until the next range close: VAH/POC/
+//  VAL from the most recently completed profile, RH/RL from the range that has
+//  just ended. A profile closing later in the day updates a staging copy only.
+//  The trading window therefore runs against exactly the numbers that existed
+//  when it opened — see FreezeLevels. Before the first range close there are no
+//  levels and no trades are possible.
 //
 //  NO LOOK-AHEAD
 //  Calculate = OnBarClose, so OnBarUpdate sees only closed bars. Levels are
@@ -51,8 +56,29 @@ namespace NinjaTrader.NinjaScript.Strategies
 		/// <summary>Window running from midnight to the "no entries after" clock time.</summary>
 		private VpsSession          _entryCutoff;
 
-		/// <summary>The levels currently in force — the last COMPLETED sessions.</summary>
+		/// <summary>
+		/// The ACCUMULATING set. Each completed session writes its result here as it
+		/// closes. Nothing trades or draws from this set — it is the staging area.
+		/// </summary>
 		private readonly VpsLevelSet _levels = new VpsLevelSet();
+
+		/// <summary>
+		/// The FROZEN set — the only levels the strategy trades and draws.
+		///
+		/// Everything is fixed at the moment the RANGE session closes: VAH, POC and
+		/// VAL from the most recently completed profile, RH and RL from the range
+		/// that has just ended. From that instant until the next range close not one
+		/// of the five can move, so every sweep, every target and every break-even
+		/// line for the whole trading window is measured against the same numbers a
+		/// person reading the chart would have written down at the range close.
+		/// </summary>
+		private readonly VpsLevelSet _frozen = new VpsLevelSet();
+
+		/// <summary>Which range occurrence produced the frozen set; identifies its drawings.</summary>
+		private DateTime _freezeOccurrence = DateTime.MinValue;
+		/// <summary>The bar time the freeze happened on — the left anchor of every level line.</summary>
+		private DateTime _freezeTime = DateTime.MinValue;
+		private int      _freezes;
 
 		// ── Resolved configuration ────────────────────────────────────────────────
 		private TimeZoneInfo _barTz;
@@ -95,7 +121,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			if (State == State.SetDefaults)
 			{
 				Description = "Liquidity sweeps of the session volume profile's VAH/VAL and the time range's "
-				            + "RH/RL, confirmed by rejection or an engulfing candle, targeting the farthest "
+				            + "RH/RL, confirmed by a red/green candle closing back through the swept level, targeting the farthest "
 				            + "opposite-side level, with break-even on any intermediate line.";
 				Name        = "MnqVpLiquiditySweep";
 
@@ -247,9 +273,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 					r.Poc.ToString(_tickFormat, CultureInfo.InvariantCulture),
 					r.Val.ToString(_tickFormat, CultureInfo.InvariantCulture)));
 
-			// A new profile invalidates any sweep armed against the old levels.
-			_sweeps.Clear(VpsLevel.Vah);
-			_sweeps.Clear(VpsLevel.Val);
+			// Note what is NOT done here: no sweep is cleared and nothing the strategy
+			// trades changes. A profile closing mid-window would otherwise move VAH
+			// and VAL under an open setup. The new values sit in the staging set and
+			// take effect only at the next range close, where FreezeLevels applies
+			// them all at once.
 
 			if (VerboseLogging)
 				Print(string.Format(CultureInfo.InvariantCulture,
@@ -308,15 +336,44 @@ namespace NinjaTrader.NinjaScript.Strategies
 					_rangeHigh.ToString(_tickFormat, CultureInfo.InvariantCulture),
 					_rangeLow.ToString(_tickFormat, CultureInfo.InvariantCulture)));
 
-			_sweeps.Clear(VpsLevel.Rh);
-			_sweeps.Clear(VpsLevel.Rl);
-
 			if (VerboseLogging)
 				Print(string.Format(CultureInfo.InvariantCulture,
 					"{0}  RANGE {1:yyyy-MM-dd HH:mm} closed | RH {2} RL {3}",
 					Time[0], _rangeOccurrence,
 					_rangeHigh.ToString(_tickFormat, CultureInfo.InvariantCulture),
 					_rangeLow.ToString(_tickFormat, CultureInfo.InvariantCulture)));
+
+			// The range close is the freeze point for EVERYTHING.
+			FreezeLevels();
+		}
+
+		/// <summary>
+		/// Fixes all five levels for the trading window that starts here.
+		///
+		/// This is the moment the strategy commits: the staging set is copied whole
+		/// into the frozen set, every armed sweep from the previous window is dropped
+		/// because it was measured against numbers that no longer apply, and the
+		/// chart is given one line and one label per level anchored to this bar.
+		/// Nothing may change any of it until the next range session closes.
+		/// </summary>
+		private void FreezeLevels()
+		{
+			_frozen.CopyFrom(_levels);
+			_sweeps.Reset();
+
+			_freezeOccurrence = _rangeOccurrence;
+			_freezeTime       = Time[0];
+			_freezes++;
+
+			if (_freezes == 1 || VerboseLogging)
+				Print(string.Format(CultureInfo.InvariantCulture,
+					"{0}  LEVELS FIXED for this window ({1}): {2}",
+					Time[0], _frozen.HasProfile ? "profile " + _frozen.ProfileSession.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+					                            : "no profile yet — RH/RL only",
+					_frozen.Describe(_tickFormat)));
+
+			if (ShowVisuals)
+				LabelFrozenLevels();
 		}
 
 		/// <summary>
@@ -372,7 +429,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			if (_diagBars == 0)
 				return "  DIAGNOSIS: no bars were processed at all. Check the backtest date range, and that\n"
-				     + "             the series is 1 Minute.\n";
+				     + "             the series is 1 Minute or 5 Minute.\n";
 
 			if (_diagBarsInProfile == 0)
 				return "  DIAGNOSIS: no bar ever fell inside the PROFILE session, so VAH/POC/VAL were never\n"
@@ -400,8 +457,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 				     + "             Compare the published levels against the chart.\n";
 
 			if (_diagConfirmations == 0)
-				return "  DIAGNOSIS: sweeps happened but none was confirmed. Widen 'Engulfing window' or\n"
-				     + "             'Level proximity (ticks)'.\n";
+				return "  DIAGNOSIS: sweeps happened but no candle both closed in the rejecting colour AND\n"
+				     + "             closed back through the swept level. Widen 'Confirmation window (bars\n"
+				     + "             after the sweep)' or 'Level proximity (ticks)'.\n";
 
 			if (_diagEntries == 0)
 				return "  DIAGNOSIS: setups were confirmed but every one was rejected - see the counts above.\n";

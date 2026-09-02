@@ -31,14 +31,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_barTz     = ResolveBarTimeZone();
 			_barLength = PeriodLength(BarsPeriod);
 
-			// The Pine indicator builds its profile from the chart's own bars unless a
-			// lower timeframe is available. Requiring a 1-minute primary keeps this
-			// port on the same footing as that chart and matches the other two
-			// strategies in this project.
-			if (BarsPeriod.BarsPeriodType != BarsPeriodType.Minute || BarsPeriod.Value != 1)
+			// The Pine indicator builds its profile from the chart's own bars, so the
+			// primary series IS the profile's resolution. Both supported timeframes
+			// are legitimate; they simply produce different profiles, and 5 Minute is
+			// the coarser of the two. The timeframe is taken from the Data Series
+			// rather than from a parameter of its own — one setting, so the strategy
+			// and the chart can never disagree about which bars built the levels.
+			if (BarsPeriod.BarsPeriodType != BarsPeriodType.Minute
+			    || (BarsPeriod.Value != 1 && BarsPeriod.Value != 5))
 				Fail(string.Format(CultureInfo.InvariantCulture,
-					"This strategy requires a 1 Minute primary data series. The current series is {0} {1}. "
-				  + "The volume profile is built from these bars, so a coarser series would change the levels.",
+					"This strategy requires a 1 Minute or 5 Minute primary data series. The current series is {0} {1}. "
+				  + "Set it in the Data Series window; the volume profile is built from these bars.",
 					BarsPeriod.Value, BarsPeriod.BarsPeriodType));
 
 			TimeZoneInfo anchor = VpsTimeZone.Resolve(VpsDst.AnchorTimeZoneId);
@@ -83,6 +86,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			_profileOccurrence = DateTime.MinValue;
 			_rangeOccurrence   = DateTime.MinValue;
+			_freezeOccurrence  = DateTime.MinValue;
+			_freezeTime        = DateTime.MinValue;
+			_freezes           = 0;
 			_inProfile         = false;
 			_inRange           = false;
 			_rangeHigh         = 0;
@@ -96,8 +102,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 			PrintSessionPlan();
 
 			Print(string.Format(CultureInfo.InvariantCulture,
-				"MnqVpLiquiditySweep loaded: {0} | tick {1} | point value ${2} | bar tz {3}{4}",
-				Instrument.FullName, _tickSize, _pointValue, _barTz == null ? "?" : _barTz.Id,
+				"MnqVpLiquiditySweep loaded: {0} | {1} {2} series | tick {3} | point value ${4} | bar tz {5}{6}",
+				Instrument.FullName, BarsPeriod.Value, BarsPeriod.BarsPeriodType,
+				_tickSize, _pointValue, _barTz == null ? "?" : _barTz.Id,
 				_configError ? "\n  CONFIG ERROR: " + _configErrorText : string.Empty));
 		}
 
