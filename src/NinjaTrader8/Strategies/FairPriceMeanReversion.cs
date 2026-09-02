@@ -43,7 +43,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private FairPriceEngine       _fair;
 		private ExtendedTpEngine      _xtp;
 		private SessionVwap           _vwap;
-		private VisualEngine          _viz;
 		private NewsFairPriceResolver _news;
 		private NewsLoadResult        _newsLoad;
 
@@ -76,13 +75,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private int  _tradesDay;
 		private int  _tradesSession;
 		private int  _ambiguousCount;
-		private int  _uid;
-		private int  _fairSeq;
-		private int  _sessionSeq;
-		private int  _fairBarIndex = -1;
 		private bool _unreconciled;
 		private string _lastExitText = "-";
 		private string _lastRejectText = "-";
+
+		// ── Daily realised P&L budget ─────────────────────────────────────────────
+		// Accumulated on exit fills, reset on each new trading day. _dayLimitHit is
+		// latched so that a position closing back inside the limit cannot re-open
+		// trading for a day that has already been stopped out.
+		private double   _realisedPnlDay;
+		private bool     _dayLossHit;
+		private bool     _dayProfitHit;
+		private bool     _flattenRequested;
+		/// <summary>Trading day the accumulator belongs to. Rolling is keyed off this, never off bar order.</summary>
+		private DateTime _pnlDay = DateTime.MinValue;
 
 		private Func<int, double> _highAt;
 		private Func<int, double> _lowAt;
@@ -94,6 +100,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private bool   _inTradingWindow;
 		private bool   _warmupDone;
 		private int    _effSession;
+
+		/// <summary>What the governing news capture wants: revert, continue, or wait.</summary>
+		private FpNewsBias _newsBias = FpNewsBias.Reversion;
+		/// <summary>True while a news surprise has not yet produced a new Fair Price.</summary>
+		private bool       _newsAwaiting;
 
 		protected override void OnStateChange()
 		{
@@ -136,8 +147,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
 			else if (State == State.Terminated)
 			{
-				if (_viz != null)
-					_viz.RemoveAll();
+				PrintRunSummary();
 			}
 		}
 
@@ -154,8 +164,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 			if (CurrentBar < required)
 				return;
 
-			_viz.CurrentBarIndex = CurrentBar;
-
 			DateTime barOpen = PrimaryBarOpenTime();
 			SessionEvaluation ev = _sessions.Advance(barOpen, _barTz);
 
@@ -169,6 +177,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_posState   = !_hasFair ? 0 : Close[0] > _zoneUpper ? 1 : Close[0] < _zoneLower ? -1 : 0;
 			_insideZone = _hasFair && Close[0] <= _zoneUpper && Close[0] >= _zoneLower;
 
+			_newsBias     = _fair.NewsBias;
+			_newsAwaiting = _news != null && _news.IsAwaitingConsolidation;
+
 			ResolveTradingWindow(ev);
 
 			bool sessionStart = _effSession != 0 && _effSession != _prevEffSession;
@@ -178,20 +189,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 			if (ev.IsNewDay)
 				_tradesDay = 0;
 
+			// Keyed on the day itself rather than on IsNewDay, so the accumulator and the
+			// exit-fill path can never disagree about which day a trade belongs to.
+			RollPnlDay(ev.TzBarOpen.Date);
+
 			if (sessionStart)
 			{
 				_tradesSession   = 0;
 				_tradingStartBar = CurrentBar;
 				_xtp.OnSessionStart();
-				_viz.BeginSession(++_sessionSeq, CurrentBar);
 			}
-
-			// The band stops on the last bar that was still inside the window, so it never
-			// bleeds past the session close.
-			if (sessionEnd)
-				_viz.EndSession(CurrentBar - 1);
-			else if (_effSession != 0)
-				_viz.ExtendSession(CurrentBar);
 
 			_warmupDone = _tradingStartBar >= 0 && (CurrentBar - _tradingStartBar) >= MinBarsBeforeFirstTrade;
 
@@ -211,18 +218,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			_xtp.OnBar(Close[0], _fairPrice, _hasFair);
 
-			DrawFairPriceIfNeeded();
-
 			if (brk.Occurred)
-			{
-				_viz.DrawBreak(brk.Direction, brk.Event, High[0], Low[0], ++_uid);
-				_viz.DrawBrokenLevel(brk.Direction, brk.BrokenLevel,
-					brk.BrokenBarIndex >= 0 ? CurrentBar - brk.BrokenBarIndex : -1, _uid);
 				EvaluateEntry(brk);
-			}
 
 			MaintainOpenTrades(sessionEnd);
-			DrawStatePanel(ev);
 		}
 
 		private void ResolveTradingWindow(SessionEvaluation ev)
@@ -298,7 +297,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			if (_news != null)
 			{
-				capture = _news.OnReferenceBar(tz, _fpBarLength, Opens[idx][barsAgo]);
+				// _fpCursor is the reference series' own bar index, so the consolidation
+				// detector counts reference candles and never chart candles.
+				capture = _news.OnReferenceBar(tz, _fpBarLength, _fpCursor,
+					Opens[idx][barsAgo], Highs[idx][barsAgo], Lows[idx][barsAgo], Closes[idx][barsAgo]);
+
+				if (_news.ReportIsNew && PrintNewsReports)
+					Print(_news.LastReport);
+
 				if (sessionIndex != 0)
 					pending = _news.PendingFor(sessionIndex, sessionOpenTz);
 			}
@@ -317,32 +323,27 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			PivotResult ph = PivotDetector.PivotHigh(_highAt, PivotLeftBars, PivotRightBars, CurrentBar + 1);
 			if (ph.Found)
-			{
-				PivotAccepted a = _structure.OnPivotHigh(ph.Price, CurrentBar - ph.BarsAgo, CurrentBar);
-				if (_inTradingWindow)
-					_viz.DrawSwing(a.Role, ph.BarsAgo, ph.Price, ++_uid);
-			}
+				_structure.OnPivotHigh(ph.Price, CurrentBar - ph.BarsAgo, CurrentBar);
 
 			PivotResult pl = PivotDetector.PivotLow(_lowAt, PivotLeftBars, PivotRightBars, CurrentBar + 1);
 			if (pl.Found)
-			{
-				PivotAccepted a = _structure.OnPivotLow(pl.Price, CurrentBar - pl.BarsAgo, CurrentBar);
-				if (_inTradingWindow)
-					_viz.DrawSwing(a.Role, pl.BarsAgo, pl.Price, ++_uid);
-			}
+				_structure.OnPivotLow(pl.Price, CurrentBar - pl.BarsAgo, CurrentBar);
 		}
 
-		private void DrawFairPriceIfNeeded()
+		/// <summary>
+		/// Printed once at the end of a run. The same-bar count is the number that
+		/// says how much of the result came from intrabar path rather than signal:
+		/// if it is a large share of the trades, the P&L is a fill assumption.
+		/// </summary>
+		private void PrintRunSummary()
 		{
-			if (_fair.ChangedThisBar && _hasFair)
-			{
-				_fairSeq++;
-				_fairBarIndex = CurrentBar;
-				_viz.BeginFairPrice(_fairSeq, _fairPrice, _zoneUpper, _zoneLower, _fair.IsNewsFairPrice);
-			}
-
-			if (_hasFair && _fairBarIndex >= 0 && _inTradingWindow)
-				_viz.ExtendFairPrice(_fairSeq, CurrentBar - _fairBarIndex);
+			Print(string.Format(CultureInfo.InvariantCulture,
+				"FPMR run summary: {0} trades signalled | {1} contained BOTH stop and target in one candle ({2:0.#}%) | "
+			  + "fill resolution {3}",
+				_tradeSeq,
+				_ambiguousCount,
+				_tradeSeq > 0 ? 100.0 * _ambiguousCount / _tradeSeq : 0.0,
+				UseTickPrecision ? "High (1 tick)" : "Standard (stop assumed first)"));
 		}
 	}
 }

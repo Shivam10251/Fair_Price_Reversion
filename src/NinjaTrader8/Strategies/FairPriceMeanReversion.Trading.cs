@@ -14,7 +14,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Text;
 using NinjaTrader.Cbi;
 using NinjaTrader.NinjaScript.Strategies.FPMR;
 #endregion
@@ -60,7 +59,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 				HasFairPrice = _hasFair,
 				WarmupDone   = _warmupDone,
 				InZone       = _insideZone,
-				SideOk       = dir < 0 ? _posState == 1 : _posState == -1,
+				NewsReady    = !_newsAwaiting,
+				SideOk       = SideAllowed(dir),
+				DailyLossOk  = !_dayLossHit && LossHeadroomFor(sizing.ResultingRisk),
+				DailyProfitOk= !_dayProfitHit,
 				DayCapOk     = MaxTradesPerDay     == 0 || _tradesDay     < MaxTradesPerDay,
 				SessionCapOk = MaxTradesPerSession == 0 || _tradesSession < MaxTradesPerSession,
 				FlatOk       = !OnlyOneOpenTrade || (_openTrades.Count == 0 && Position.MarketPosition == MarketPosition.Flat),
@@ -80,6 +82,169 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
 
 			SubmitEntry(dir, brk.Event, entry, stop, risk, sizing);
+		}
+
+		/// <summary>
+		/// Which side the current regime allows.
+		///
+		/// REVERSION (the strategy's normal mode, and every non-news session): price
+		/// above the Fair Price zone only permits shorts, below it only longs — the
+		/// trade is always back toward Fair Price.
+		///
+		/// CONTINUATION (large news surprise, only when the continuation option is on):
+		/// the initial move is treated as legitimate repricing rather than something to
+		/// fade, so the rule inverts and the trade goes WITH the displacement.
+		/// </summary>
+		private bool SideAllowed(int dir)
+		{
+			if (_newsBias == FpNewsBias.Continuation)
+				return dir < 0 ? _posState == -1 : _posState == 1;
+
+			return dir < 0 ? _posState == 1 : _posState == -1;
+		}
+
+		// ── Daily realised P&L budget ─────────────────────────────────────────────
+		//
+		// The limits are a bound on the day's NET result, not a switch that trips after
+		// the fact. Two things are therefore needed:
+		//
+		//   1. A PREVENTIVE gate. Blocking new entries only once the limit is already
+		//      breached lets the day overshoot by the whole risk of the trade that broke
+		//      it: sitting at -$350 against a $400 limit, one more trade risking $100
+		//      ends the day at -$450. The gate below refuses any trade whose worst case,
+		//      added to what is already realised AND to what the open trades still have
+		//      at risk, would push the day past the limit.
+		//
+		//   2. A REACTIVE latch, kept as a backstop. A stop can fill worse than its level
+		//      on a gap, so the projection is a bound on intent, not a guarantee.
+
+		/// <summary>Dollar loss still at risk across every open trade if each one stops out.</summary>
+		private double OpenRiskUsd()
+		{
+			double risk = 0.0;
+
+			for (int i = 0; i < _openTrades.Count; i++)
+				risk += _openTrades[i].OpenRiskUsd(_pointValue);
+
+			return risk;
+		}
+
+		/// <summary>
+		/// True when taking a trade risking <paramref name="candidateRiskUsd"/> still leaves
+		/// the day inside the loss limit even if it, and every open trade, hits its stop.
+		/// </summary>
+		private bool LossHeadroomFor(double candidateRiskUsd)
+		{
+			if (!UseDailyPnlLimits || DailyLossLimitUSD <= 0)
+				return true;
+
+			double worstCase = _realisedPnlDay - OpenRiskUsd() - Math.Max(0.0, candidateRiskUsd);
+			return worstCase >= -DailyLossLimitUSD;
+		}
+
+		/// <summary>
+		/// Moves the accumulator onto a new trading day. Keyed on the day value itself so
+		/// that the bar loop and an exit fill arriving on the first bar of a new day cannot
+		/// disagree — previously the exit was booked to the old day and then wiped by the
+		/// reset, losing it from both.
+		/// </summary>
+		private void RollPnlDay(DateTime tradingDay)
+		{
+			if (tradingDay == _pnlDay)
+				return;
+
+			_pnlDay           = tradingDay;
+			_realisedPnlDay   = 0.0;
+			_dayLossHit       = false;
+			_dayProfitHit     = false;
+			_flattenRequested = false;
+		}
+
+		/// <summary>Adds money to the day and latches the limits if it crossed one.</summary>
+		private void BookMoney(double amount, DateTime whenInBarZone)
+		{
+			RollPnlDay(TimeZoneRegistry.Convert(whenInBarZone, _barTz, _sessionTz).Date);
+
+			_realisedPnlDay += amount;
+
+			if (!UseDailyPnlLimits)
+				return;
+
+			bool wasStopped = _dayLossHit || _dayProfitHit;
+
+			if (DailyLossLimitUSD > 0 && _realisedPnlDay <= -DailyLossLimitUSD)
+				_dayLossHit = true;
+
+			if (DailyProfitLimitUSD > 0 && _realisedPnlDay >= DailyProfitLimitUSD)
+				_dayProfitHit = true;
+
+			if (!wasStopped && (_dayLossHit || _dayProfitHit))
+			{
+				Print(string.Format(CultureInfo.InvariantCulture,
+					"{0}  DAILY {1} LIMIT HIT — net {2:0.##} realised for {3:yyyy-MM-dd}. No further entries today.{4}",
+					Time[0].ToString("yyyy-MM-dd HH:mm:ss"),
+					_dayLossHit ? "LOSS" : "PROFIT",
+					_realisedPnlDay,
+					_pnlDay,
+					FlattenOnDailyLimit ? " Flattening the open position." : " The open trade is left to reach its own stop or target."));
+
+				if (FlattenOnDailyLimit)
+					_flattenRequested = true;
+			}
+		}
+
+		/// <summary>
+		/// Books ONE exit execution. Called per execution rather than per trade, because a
+		/// bracket can fill in pieces: booking the full entry quantity at the first partial
+		/// exit's price over-counted the result and then ignored the remaining fills.
+		/// </summary>
+		private void BookExitFill(TradeRecord rec, Execution execution)
+		{
+			int entryQty  = rec.FilledQuantity > 0 ? rec.FilledQuantity : rec.Quantity;
+			int remaining = entryQty - rec.ExitedQuantity;
+			if (remaining <= 0)
+				return;
+
+			int qty = Math.Min(execution.Quantity, remaining);
+
+			double gross = (execution.Price - rec.FillPrice) * rec.Direction * qty * _pointValue;
+			double comm  = execution.Commission;
+			double net   = gross - comm;
+
+			rec.ExitedQuantity += qty;
+			rec.RealisedPnl    += net;
+			rec.Commission     += comm;
+
+			BookMoney(net, execution.Time);
+		}
+
+		/// <summary>
+		/// Closes anything still open once a limit has been breached and the user asked
+		/// for that. Runs on the bar AFTER the booking so the exit order is submitted
+		/// from OnBarUpdate rather than from inside an execution callback.
+		/// </summary>
+		private void ApplyDailyLimitFlatten()
+		{
+			if (!_flattenRequested)
+				return;
+
+			bool anyLeft = false;
+
+			foreach (TradeRecord t in _openTrades)
+			{
+				if (!t.IsFilled || t.IsClosed)
+					continue;
+
+				anyLeft = true;
+
+				if (t.Direction > 0)
+					ExitLong(t.SignalName + "_LIMIT", t.SignalName);
+				else
+					ExitShort(t.SignalName + "_LIMIT", t.SignalName);
+			}
+
+			if (!anyLeft)
+				_flattenRequested = false;
 		}
 
 		/// <summary>
@@ -141,8 +306,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			string label = RejectionReporter.Label(reason);
 			_lastRejectText = label;
-
-			_viz.DrawRejection(dir, label, High[0], Low[0], ++_uid);
 
 			if (!VerboseLogging)
 				return;
@@ -208,8 +371,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_tradesDay++;
 			_tradesSession++;
 
-			_viz.OpenTrade(rec);
-
 			Print(string.Format(CultureInfo.InvariantCulture, "{0}  ENTRY {1}  |  {2}",
 				Time[0].ToString("yyyy-MM-dd HH:mm:ss"),
 				rec.Describe(),
@@ -242,8 +403,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 					continue;
 				}
 
-				_viz.UpdateTrade(t, 0);
-
 				// The zone rule never closes an open trade — only session end can.
 				if (sessionEnd && CloseAtSessionEnd && t.IsFilled)
 				{
@@ -254,13 +413,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 				}
 			}
 
-			for (int i = 0; i < _justClosed.Count; i++)
-			{
-				TradeRecord t = _justClosed[i];
-				int barsAgo = t.ExitBarIndex < 0 ? 0 : Math.Max(0, CurrentBar - t.ExitBarIndex);
-				_viz.CloseTrade(t, barsAgo);
-			}
 			_justClosed.Clear();
+
+			ApplyDailyLimitFlatten();
 		}
 
 		// ── Order lifecycle ───────────────────────────────────────────────────────
@@ -308,14 +463,28 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			TradeRecord rec;
 
-			// Entry fill.
-			if (_trades.TryGetValue(order.Name, out rec) && !rec.IsFilled)
+			// Entry fill. An entry can fill in pieces, so the record keeps a volume-weighted
+			// average price and a running quantity; taking only the first partial understated
+			// both the position and every dollar figure derived from it.
+			if (_trades.TryGetValue(order.Name, out rec))
 			{
-				rec.IsFilled       = true;
-				rec.FillPrice      = execution.Price;
-				rec.FilledQuantity = execution.Quantity;
+				bool firstFill = !rec.IsFilled;
 
-				if (VerboseLogging)
+				int    prevQty = rec.FilledQuantity;
+				int    newQty  = prevQty + execution.Quantity;
+
+				rec.FillPrice = firstFill || newQty <= 0
+					? execution.Price
+					: (rec.FillPrice * prevQty + execution.Price * execution.Quantity) / newQty;
+
+				rec.FilledQuantity = newQty;
+				rec.IsFilled       = true;
+				rec.Commission    += execution.Commission;
+
+				// Entry commission is part of the day's net result the moment it is charged.
+				BookMoney(-execution.Commission, execution.Time);
+
+				if (firstFill && VerboseLogging)
 				{
 					double realisedRiskPoints = Math.Abs(rec.FillPrice - rec.StopPrice);
 					Print(string.Format(CultureInfo.InvariantCulture,
@@ -334,13 +503,21 @@ namespace NinjaTrader.NinjaScript.Strategies
 			if (string.IsNullOrEmpty(from) || !_trades.TryGetValue(from, out rec) || rec.IsClosed)
 				return;
 
+			BookExitFill(rec, execution);
+
 			rec.ExitReason   = ClassifyExit(order.Name, rec);
 			rec.ExitPrice    = execution.Price;
 			rec.ExitTime     = execution.Time;
 			rec.ExitBarIndex = CurrentBars[0];
-			rec.IsClosed     = true;
+
+			// Only closed once every filled contract has been exited; a partial exit leaves
+			// the record open so the remainder is still counted as risk on the books.
+			rec.IsClosed = rec.ExitedQuantity >= (rec.FilledQuantity > 0 ? rec.FilledQuantity : rec.Quantity);
 
 			_lastExitText = rec.ExitReason + " @ " + rec.ExitPrice.ToString("0.#####", CultureInfo.InvariantCulture);
+
+			if (!rec.IsClosed)
+				return;
 
 			if (VerboseLogging)
 				Print(string.Format(CultureInfo.InvariantCulture, "{0}  EXIT {1} {2} at {3:0.#####}{4}",
@@ -380,55 +557,5 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
 		}
 
-		// ── State dump ────────────────────────────────────────────────────────────
-		private void DrawStatePanel(SessionEvaluation ev)
-		{
-			if (!ShowStatePanel)
-				return;
-
-			StringBuilder sb = new StringBuilder();
-			sb.AppendLine("FAIR PRICE MEAN REVERSION");
-			sb.AppendLine("Session       : " + (_effSession != 0
-				? "S" + _effSession + (ev.InSession ? " active" : " (news pre-open)")
-				: "closed"));
-			sb.AppendLine("Fair Price    : " + (_hasFair
-				? _fairPrice.ToString("0.#####", CultureInfo.InvariantCulture) + (_fair.IsNewsFairPrice ? "  [news]" : string.Empty)
-				: "-"));
-			sb.AppendLine("Zone          : " + (_hasFair
-				? _zoneLower.ToString("0.#####", CultureInfo.InvariantCulture) + " / " + _zoneUpper.ToString("0.#####", CultureInfo.InvariantCulture)
-				: "-"));
-			sb.AppendLine("Distance      : " + (_hasFair
-				? (Close[0] - _fairPrice).ToString("0.##", CultureInfo.InvariantCulture) + " pts"
-				: "-"));
-			sb.AppendLine("Regime        : " + (_posState == 1 ? "ABOVE zone (shorts)"
-				: _posState == -1 ? "BELOW zone (longs)"
-				: _hasFair ? "INSIDE zone (no new trades)" : "no Fair Price"));
-			sb.AppendLine("Structure     : " + _structure.State);
-			sb.AppendLine("Active high   : " + (_structure.HasActiveHigh
-				? _structure.ActiveHighRole + " " + _structure.ActiveHigh.ToString("0.#####", CultureInfo.InvariantCulture) : "-"));
-			sb.AppendLine("Active low    : " + (_structure.HasActiveLow
-				? _structure.ActiveLowRole + " " + _structure.ActiveLow.ToString("0.#####", CultureInfo.InvariantCulture) : "-"));
-			sb.AppendLine("Level age     : " + _structure.ActiveLevelAge(CurrentBar) + " bars");
-			sb.AppendLine("Last CHoCH    : " + _structure.LastChoch);
-			sb.AppendLine("Last BOS      : " + _structure.LastBos);
-			sb.AppendLine("Warm-up       : " + (_warmupDone ? "done" : "blocking (" + Math.Max(0, MinBarsBeforeFirstTrade - (CurrentBar - Math.Max(0, _tradingStartBar))) + " bars left)"));
-			sb.AppendLine("Open trades   : " + _openTrades.Count + (Position.MarketPosition != MarketPosition.Flat
-				? "  (" + Position.MarketPosition + " " + Position.Quantity + ")" : string.Empty));
-			sb.AppendLine("Trades today  : " + _tradesDay + (MaxTradesPerDay > 0 ? " / " + MaxTradesPerDay : string.Empty));
-			sb.AppendLine("This session  : " + _tradesSession + (MaxTradesPerSession > 0 ? " / " + MaxTradesPerSession : string.Empty));
-			sb.AppendLine("Last exit     : " + _lastExitText);
-			sb.AppendLine("Last reject   : " + _lastRejectText);
-			sb.AppendLine("Same-bar hits : " + _ambiguousCount + "  (" + SameBarPriority + ")");
-			sb.AppendLine("EMA filter    : " + DescribeEmaFilter());
-			sb.AppendLine("VWAP filter   : " + (!UseVwapFilter ? "OFF"
-				: !_vwap.HasValue ? "no volume data" : Close[0] > _vwap.Value ? "above (longs ok)" : "below (shorts ok)"));
-			sb.AppendLine("FP-TP override: " + (!UseExtendedTp ? "OFF"
-				: (double.IsNaN(_xtp.DistancePercent) ? "-" : _xtp.DistancePercent.ToString("0.##", CultureInfo.InvariantCulture) + "% from FP · " + _xtp.Remaining + " armed")));
-			sb.Append    ("News          : " + (!UseNewsFairPrice ? "OFF"
-				: _news == null ? "FILE ERROR — normal Fair Price in use"
-				: (_newsLoad != null ? _newsLoad.Events.Count + " events loaded" : "loaded")));
-
-			_viz.DrawPanel(sb.ToString());
-		}
 	}
 }

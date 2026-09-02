@@ -1,0 +1,57 @@
+{
+  "instrument": "MNQ",
+  "merge_policy": "MergeNonBackAdjusted",
+  "session_template": "CME US Index Futures ETH",
+  "bar_type": "Minute",
+  "bar_value": 1,
+  "date_range": {
+    "start": "2026-01-01",
+    "end": "2026-09-02"
+  },
+  "data_availability_verified": {
+    "source": "C:/Users/DELL/Documents/NinjaTrader 8/db/minute/",
+    "contracts_present": [
+      "MNQ 03-26",
+      "MNQ 06-26",
+      "MNQ 09-26"
+    ],
+    "distinct_2026_days_with_1min_data": 200,
+    "first_day": "2026-01-01",
+    "last_day": "2026-09-02",
+    "note": "MNQ 12-26 has no 1-minute data on this machine; it is outside the range anyway."
+  },
+  "strategy": "Strategy 2",
+  "ninjatrader_strategy_name": "MultiSessionFirstCandleStrategy",
+  "source_files": [
+    "strategy_2/MultiSessionFirstCandleStrategy.cs  (single file)"
+  ],
+  "logic": {
+    "concept": "For each of up to three sessions, isolate the FIRST 1-minute candle, wait for it to close, and trade in its direction (green long, red short).",
+    "entry": "Direction of the session's first 1-minute candle, at its close",
+    "stop_loss": "FixedDistance 20 points (default), or FirstCandleExtreme",
+    "take_profit": "FixedDistance 40 points (default), or RewardMultiple of actual risk",
+    "break_even": "None",
+    "position_sizing": "Risk-based: RiskPerTrade 100 +/- 30, max 10 contracts"
+  },
+  "dependencies": "None. Self-contained single file.",
+  "timeframe_requirement": "HARD REQUIREMENT: 1 Minute primary. Anything else is a config error and blocks all orders.",
+  "parameters_as_run": {
+    "SessionTimeZoneId": "Asia/Kolkata",
+    "AutoAdjustForUsDst": true,
+    "Session1": "1900-0130 (enabled, 1 trade)",
+    "Session2": "0330-0830 (enabled, 1 trade)",
+    "Session3": "0930-1730 (enabled, 1 trade)",
+    "MaxTradesPerDay": 3,
+    "StopMode": "FixedDistance",
+    "TargetMode": "FixedDistance",
+    "DistanceUnit": "Points",
+    "StopLossValue": 20,
+    "TakeProfitValue": 40,
+    "UseTickPrecision": true,
+    "DojiAction": "NoTrade",
+    "StrictFirstCandle": true
+  },
+  "order_fill_resolution": "High / Tick / 1  (set by the strategy when UseTickPrecision is on)",
+  "commission_note": "Set on the NinjaTrader account commission template, not in NinjaScript.",
+  "status": "PENDING_RUN"
+}

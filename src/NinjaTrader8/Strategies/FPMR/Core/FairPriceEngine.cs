@@ -31,6 +31,8 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public int      NewsSessionIndex { get; private set; }
 		public DateTime NewsSessionOpenTz{ get; private set; }
 		public NewsEvent NewsEventUsed   { get; private set; }
+		/// <summary>What the news branch wants done about the current Fair Price.</summary>
+		public FpNewsBias NewsBias        { get; private set; }
 
 		private int      _currentSessionIndex;
 		private bool     _armed;
@@ -50,6 +52,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			NewsSessionIndex     = 0;
 			NewsSessionOpenTz    = default(DateTime);
 			NewsEventUsed        = null;
+			NewsBias             = FpNewsBias.Reversion;
 			_currentSessionIndex = 0;
 			_armed               = false;
 		}
@@ -78,6 +81,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				NewsSessionIndex  = captureThisBar.SessionIndex;
 				NewsSessionOpenTz = captureThisBar.SessionOpenTz;
 				NewsEventUsed     = captureThisBar.Event;
+				NewsBias          = captureThisBar.Bias;
 				_armed            = false;
 			}
 
@@ -94,6 +98,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 					IsNewsFairPrice  = false;
 					NewsSessionIndex = 0;
 					NewsEventUsed    = null;
+					NewsBias         = FpNewsBias.Reversion;
 					_armed           = false;
 				}
 			}
@@ -109,6 +114,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 					NewsSessionIndex  = pendingForThisSession.SessionIndex;
 					NewsSessionOpenTz = pendingForThisSession.SessionOpenTz;
 					NewsEventUsed     = pendingForThisSession.Event;
+					NewsBias          = pendingForThisSession.Bias;
 					_armed            = false;
 				}
 				else
@@ -117,6 +123,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 					IsNewsFairPrice  = false;
 					NewsSessionIndex = 0;
 					NewsEventUsed    = null;
+					NewsBias         = FpNewsBias.Reversion;
 					_armed           = true;
 				}
 			}
@@ -124,6 +131,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			{
 				FairPrice       = sourceOfPreviousBar;
 				IsNewsFairPrice = false;
+				NewsBias        = FpNewsBias.Reversion;
 				_armed          = false;
 			}
 

@@ -94,11 +94,42 @@ namespace NinjaTrader.NinjaScript.Strategies
 				Print("FPMR WARNING: the primary series is not time based, so bar OPEN times cannot be derived. "
 				    + "Session membership will use the bar's CLOSE time instead. Use a minute or second chart for full fidelity.");
 
+			// Rebase the typed SUMMER windows onto the DST anchor zone, where the same
+			// market hours have ONE fixed clock time all year. See FPMR/Core/DstAnchor.
+			TimeZoneInfo evaluationTz = _sessionTz;
+			TimeSpan     summerShift  = TimeSpan.Zero;
+
+			string w1 = Session1Window, w2 = Session2Window, w3 = Session3Window;
+
+			if (AutoAdjustForUsDst)
+			{
+				TimeZoneInfo anchor = TimeZoneRegistry.Resolve(DstAnchor.AnchorTimeZoneId);
+
+				if (anchor == null)
+				{
+					Fail("The DST anchor zone '" + DstAnchor.AnchorTimeZoneId
+					   + "' could not be resolved on this machine.");
+				}
+				else if (_sessionTz != null && !_sessionTz.Equals(anchor))
+				{
+					summerShift  = DstAnchor.SummerShift(_sessionTz, anchor);
+					evaluationTz = anchor;
+
+					w1 = DstAnchor.ShiftWindow(w1, -summerShift);
+					w2 = DstAnchor.ShiftWindow(w2, -summerShift);
+					w3 = DstAnchor.ShiftWindow(w3, -summerShift);
+				}
+			}
+
+			_sessionTz = evaluationTz;
+
 			_sessions = new SessionManager(
 				_sessionTz ?? TimeZoneInfo.Utc,
-				new SessionWindow(1, Session1Enabled, Session1Window),
-				new SessionWindow(2, Session2Enabled, Session2Window),
-				new SessionWindow(3, Session3Enabled, Session3Window));
+				new SessionWindow(1, Session1Enabled, w1),
+				new SessionWindow(2, Session2Enabled, w2),
+				new SessionWindow(3, Session3Enabled, w3));
+
+			PrintSessionPlan(summerShift);
 
 			string windowError = _sessions.FirstConfigError();
 			if (windowError != null)
@@ -108,23 +139,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_fair      = new FairPriceEngine();
 			_xtp       = new ExtendedTpEngine(UseExtendedTp, ExtendedTpTriggerPercent, ExtendedTpTradeCount, ExtendedTpMode);
 			_vwap      = new SessionVwap();
-
-			_viz = new VisualEngine(this, RemoveDrawObject)
-			{
-				ShowFairPriceLine  = ShowFairPriceLine,
-				ShowFairPriceZone  = ShowFairPriceZone,
-				ShowFullVisuals    = ShowFullVisuals,
-				ShowRejections     = ShowRejectionMarks,
-				ShowStatePanel     = ShowStatePanel,
-				ShowTradeZones     = ShowTradeZones,
-				ShowSessionShading = ShowSessionShading,
-				SessionBrush       = SessionShadingBrush ?? Brushes.LightBlue,
-				SessionOpacity     = SessionShadingOpacity,
-				SessionHistory     = SessionShadingHistory,
-				FairPriceHistory   = FairPriceHistory,
-				TradeHistory       = TradeDrawingHistory,
-				ForwardExtend      = FairPriceExtendBars
-			};
 
 			// Only construct what the filter will actually read — an unused EMA is pure
 			// per-bar cost, and a null leg is what tells the gate that leg is disabled.
@@ -149,6 +163,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_tradesSession   = 0;
 			_ambiguousCount  = 0;
 			_unreconciled    = false;
+
+			_realisedPnlDay   = 0.0;
+			_dayLossHit       = false;
+			_dayProfitHit     = false;
+			_flattenRequested = false;
+			_pnlDay           = DateTime.MinValue;
 
 			Print(string.Format(CultureInfo.InvariantCulture,
 				"FPMR loaded: {0} | tick {1} | point value ${2} | 1 pt = ${2} | session tz {3} | bar tz {4} | "
@@ -187,14 +207,79 @@ namespace NinjaTrader.NinjaScript.Strategies
 				return;
 			}
 
+			// With surprise classification off the resolver is handed a tolerance that
+			// nothing can exceed and no detector, so every qualifying release keeps the
+			// pre-news price as Fair Price — byte-for-byte the previous behaviour.
+			ConsolidationDetector detector = UseNewsSurprise
+				? new ConsolidationDetector(NewsConsolidationBars,
+				                            NewsConsolidationRangeTicks * _tickSize,
+				                            NewsConsolidationSearchBars)
+				: null;
+
 			_news = new NewsFairPriceResolver(_newsLoad.Events, _sessions, NewsImpactFilter,
-			                                  NewsCurrencyFilter, NewsMultipleEventRule, NewsLookbackHours);
+			                                  NewsCurrencyFilter, NewsMultipleEventRule, NewsLookbackHours,
+			                                  UseNewsSurprise ? NewsExpectedTolerancePercent   : double.MaxValue,
+			                                  UseNewsSurprise ? NewsUnexpectedThresholdPercent : double.MaxValue,
+			                                  UseNewsSurprise ? NewsUnknownRule : FpNewsUnknownRule.TreatAsExpected,
+			                                  UseNewsSurprise && NewsAllowContinuation,
+			                                  detector);
+
+			int withBoth = 0;
+			foreach (NewsEvent e in _newsLoad.Events)
+				if (e.HasForecast && e.HasActual)
+					withBoth++;
 
 			Print(string.Format(CultureInfo.InvariantCulture,
 				"FPMR news calendar: {0} events from {1} ({2}, dates {3}), {4} rows skipped. "
 			  + "Rows without an explicit UTC offset were read as {5}.",
 				_newsLoad.Events.Count, NewsFilePath, _newsLoad.DetectedFormat, _newsLoad.DetectedDatePattern,
 				_newsLoad.SkippedRows, _newsTz.Id));
+
+			if (UseNewsSurprise)
+				Print(string.Format(CultureInfo.InvariantCulture,
+					"FPMR news surprise: {0} of {1} events carry BOTH a forecast and an actual. "
+				  + "The other {2} fall to the '{3}' rule. Expected <= {4}%, large surprise > {5}%. "
+				  + "Consolidation = {6} bars inside {7} ticks, searched for {8} bars. Continuation {9}.",
+					withBoth, _newsLoad.Events.Count, _newsLoad.Events.Count - withBoth, NewsUnknownRule,
+					NewsExpectedTolerancePercent, NewsUnexpectedThresholdPercent,
+					NewsConsolidationBars, NewsConsolidationRangeTicks, NewsConsolidationSearchBars,
+					NewsAllowContinuation ? "ON" : "OFF"));
+
+			if (UseNewsSurprise && withBoth == 0)
+				Log("FPMR: surprise classification is ON but NO event in the calendar has both a forecast and an "
+				  + "actual value. Every release will fall to the '" + NewsUnknownRule + "' rule. Check that the "
+				  + "file has 'forecast' and 'actual' columns.", LogLevel.Warning);
+		}
+
+		/// <summary>
+		/// Prints what each window resolves to in summer AND winter, so the shift is
+		/// visible before a bar is processed rather than inferred from fills.
+		/// </summary>
+		private void PrintSessionPlan(TimeSpan summerShift)
+		{
+			if (!AutoAdjustForUsDst || summerShift == TimeSpan.Zero)
+			{
+				Print("FPMR sessions: DST auto-adjust OFF — windows are taken literally in "
+				    + SessionTimeZoneId + " and never move.");
+				return;
+			}
+
+			TimeZoneInfo typed  = TimeZoneRegistry.Resolve(SessionTimeZoneId);
+			TimeZoneInfo anchor = TimeZoneRegistry.Resolve(DstAnchor.AnchorTimeZoneId);
+			TimeSpan     extra  = DstAnchor.WinterExtra(typed, anchor);
+
+			Print(string.Format(CultureInfo.InvariantCulture,
+				"FPMR sessions: typed in {0} as SUMMER values, pinned to {1} so winter follows automatically.\n"
+			  + "  Session 1 {2}: {3} summer / {4} winter  (= {5} {1})\n"
+			  + "  Session 2 {6}: {7} summer / {8} winter  (= {9} {1})\n"
+			  + "  Session 3 {10}: {11} summer / {12} winter  (= {13} {1})",
+				SessionTimeZoneId, DstAnchor.AnchorTimeZoneId,
+				Session1Enabled ? "ON " : "off", Session1Window, DstAnchor.ShiftWindow(Session1Window, extra),
+				DstAnchor.ShiftWindow(Session1Window, -summerShift),
+				Session2Enabled ? "ON " : "off", Session2Window, DstAnchor.ShiftWindow(Session2Window, extra),
+				DstAnchor.ShiftWindow(Session2Window, -summerShift),
+				Session3Enabled ? "ON " : "off", Session3Window, DstAnchor.ShiftWindow(Session3Window, extra),
+				DstAnchor.ShiftWindow(Session3Window, -summerShift)));
 		}
 
 		private TimeZoneInfo ResolveBarTimeZone()

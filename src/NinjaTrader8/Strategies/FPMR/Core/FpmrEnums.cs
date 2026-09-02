@@ -39,6 +39,29 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 	public enum FpNewsTradingStart { AfterNewsCandle, AfterSessionOpen }
 
 	/// <summary>
+	/// How far the ACTUAL release differed from the FORECAST, as a share of the
+	/// forecast. Drives which branch of the news decision tree applies.
+	///   Expected            : actual ~= forecast, the release was already priced in.
+	///   PartiallyUnexpected : a meaningful surprise; the market may legitimately reprice.
+	///   Unexpected          : a large surprise, or an event with no forecast at all.
+	/// </summary>
+	public enum FpNewsSurprise { Unknown, Expected, PartiallyUnexpected, Unexpected }
+
+	/// <summary>
+	/// What the news branch wants the strategy to do.
+	///   Reversion    : trade back toward Fair Price (the strategy's normal behaviour).
+	///   Continuation : trade WITH the displacement, away from the pre-news price.
+	///   Wait         : no entries until a new Fair Price has been established.
+	/// </summary>
+	public enum FpNewsBias { Reversion, Continuation, Wait }
+
+	/// <summary>
+	/// What to do with a release whose forecast or actual is missing from the file.
+	/// A forward-looking calendar has no actuals, so this is the common case live.
+	/// </summary>
+	public enum FpNewsUnknownRule { TreatAsExpected, TreatAsUnexpected, SkipEvent }
+
+	/// <summary>
 	/// Reporting-only preference for the candle that contains both TP and SL.
 	/// The actual fill comes from the order fill resolution, not from this.
 	/// </summary>
@@ -62,9 +85,12 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		None,
 		Session,     // outside every enabled session window
 		NoFairPrice, // Fair Price not established for this session yet
+		NewsWait,    // a news surprise is waiting for its post-news consolidation
 		Warmup,      // MinBarsBeforeFirstTrade has not elapsed
 		InZone,      // close sits inside the Fair Price zone
 		Side,        // break direction disagrees with the Fair Price side
+		DailyLoss,   // realised loss for the trading day reached the limit
+		DailyProfit, // realised profit for the trading day reached the limit
 		DayCap,      // max trades per day reached
 		SessionCap,  // max trades per session reached
 		InTrade,     // a trade is open and "one at a time" is on

@@ -37,6 +37,25 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public int      ExitBarIndex = -1;
 		public DateTime ExitTime;
 
+		/// <summary>Contracts closed so far. A trade is only IsClosed once this reaches FilledQuantity.</summary>
+		public int      ExitedQuantity;
+		/// <summary>Realised P&amp;L booked so far, summed across partial exits, net of commission.</summary>
+		public double   RealisedPnl;
+		public double   Commission;
+
+		/// <summary>Dollar loss still at risk if the unexited remainder hits its stop.</summary>
+		public double OpenRiskUsd(double pointValue)
+		{
+			if (!IsFilled || IsClosed || double.IsNaN(FillPrice))
+				return 0.0;
+
+			int remaining = FilledQuantity - ExitedQuantity;
+			if (remaining <= 0)
+				return 0.0;
+
+			return Math.Abs(FillPrice - StopPrice) * remaining * pointValue;
+		}
+
 		/// <summary>True when a single bar contained both the stop and the target.</summary>
 		public bool AmbiguousBarSeen;
 

@@ -1,0 +1,3 @@
+# No backtest executed yet - no trades to record.
+# Populate by exporting the Strategy Analyzer Trades grid and running
+# scripts/import_nt8_results.py. See backtest_results/README.md.
