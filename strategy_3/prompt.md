@@ -14,6 +14,45 @@ Use the actual levels produced by the supplied indicator. Do not independently r
 
 ---
 
+# 0. LEVEL LIFECYCLE — WHEN THE LEVELS ARE FIXED
+
+This governs everything below it. The five levels are not live values that drift
+during the day; they are fixed once per cycle and then held.
+
+## The two session windows
+
+Both are user-configurable clock windows, typed in a user-selected timezone:
+
+* **Profile session** — the window whose volume builds **VAH**, **POC** and **VAL**.
+* **Range session** — the window whose high and low become **RH** and **RL**.
+
+## The freeze
+
+**When the range session closes, all five levels become fixed and cannot move
+until the next range session closes.**
+
+At that instant the strategy takes VAH/POC/VAL from the most recently *completed*
+profile session and RH/RL from the range that has just ended, and commits them as
+one set. A profile session that closes later in the day updates a staging copy
+only — it must not move VAH or VAL under a live setup.
+
+Every sweep test, every target selection and every break-even line for the whole
+trading window is therefore measured against exactly the numbers that existed the
+moment the window opened.
+
+## The trading window
+
+Entries are permitted from the range-session close until a user-configured
+**"no entries after"** clock time. There is deliberately no separate start time:
+the floor is the range close, because that is when the level set becomes complete.
+
+An already-open trade continues to be managed after the cutoff.
+
+Before the first range close of a run there are no fixed levels, and no trade is
+possible.
+
+---
+
 # 1. SHORT SETUPS
 
 Short trades can originate from either:
@@ -29,31 +68,44 @@ A short setup occurs when price trades above VAH or RH, sweeps the liquidity aro
 
 The strategy should recognize the supplied indicator's actual level values and candle behavior.
 
-### Short Confirmation — Two Valid Methods
+### Short Confirmation — The Red Rejection Candle
 
-A short entry can be triggered through either of these confirmation methods:
+A short entry is confirmed by a candle that does **both** of the following:
 
-### Method A — Sweep + Rejection
+1. It closes **RED** — `close < open`.
+2. It closes **back below** the swept level — `close < VAH` or `close < RH`.
 
-1. Price sweeps above VAH or RH.
-2. The sweep candle trades through the level.
-3. The candle then rejects the level / closes back below the relevant level.
-4. Enter SHORT according to the confirmed sweep.
+Both conditions are required. Neither alone is a confirmation:
 
-### Method B — Sweep + Bearish Engulfing
+* A red candle that still closes **above** the level is continuation, not rejection.
+* A green candle closing just under the level is buyers holding it, not rejection.
 
-1. Price sweeps above VAH or RH.
+The full sequence:
+
+1. Price sweeps above VAH or RH — the candle's **high** trades through the level.
 2. The sweep creates the liquidity event.
-3. The following candle forms a **bearish engulfing candle** at/around the swept level.
-4. Enter SHORT on confirmation of the bearish engulfing candle.
+3. A candle closes red **and** back below that level.
+4. Enter SHORT on the close of that candle.
 
-A bearish engulfing candle should be treated as a valid confirmation even if the preceding sweep candle itself did not provide the final rejection confirmation.
+### Which candle may confirm
+
+**The sweep candle itself counts** when it satisfies both conditions. A candle
+that wicks above VAH and closes red back inside is confirmed on the spot — do not
+force a wait for the next candle.
+
+Otherwise the swept level stays armed for a configurable number of following
+candles, and the first of them to satisfy both conditions confirms the setup.
+
+A candle **after** the sweep candle must additionally still have traded within a
+configurable proximity band of the swept level, so that an unrelated red candle
+later in the window cannot confirm the setup. The sweep candle traded through the
+level by definition and is never proximity-tested.
+
+There is only ONE confirmation method. Engulfing patterns are not used.
 
 The important sequence is:
 
-**High-side liquidity sweep → bearish confirmation → SHORT**
-
-Do not require both Method A and Method B. Either valid confirmation method may trigger the trade.
+**High-side liquidity sweep → red candle closes back below the level → SHORT**
 
 ---
 
@@ -70,29 +122,33 @@ The strategy should look for a liquidity sweep at these low-side levels.
 
 A long setup occurs when price trades below VAL or RL, sweeps the liquidity around that level, and then rejects the level.
 
-### Long Confirmation — Two Valid Methods
+### Long Confirmation — The Green Rejection Candle
 
-A long entry can be triggered through either:
+The exact mirror of the short rule. A long entry is confirmed by a candle that
+does **both** of the following:
 
-### Method A — Sweep + Rejection
+1. It closes **GREEN** — `close > open`.
+2. It closes **back above** the swept level — `close > VAL` or `close > RL`.
 
-1. Price sweeps below VAL or RL.
-2. The sweep candle trades through the level.
-3. The candle then rejects the level / closes back above the relevant level.
-4. Enter LONG according to the confirmed sweep.
+The full sequence:
 
-### Method B — Sweep + Bullish Engulfing
-
-1. Price sweeps below VAL or RL.
+1. Price sweeps below VAL or RL — the candle's **low** trades through the level.
 2. The sweep creates the liquidity event.
-3. The following candle forms a **bullish engulfing candle** at/around the swept level.
-4. Enter LONG on confirmation of the bullish engulfing candle.
+3. A candle closes green **and** back above that level.
+4. Enter LONG on the close of that candle.
+
+### Which candle may confirm
+
+**The sweep candle itself counts** when it satisfies both conditions. Otherwise
+the level stays armed for a configurable number of following candles, and a
+confirming candle after the sweep candle must still have traded within the
+proximity band of the swept level.
+
+There is only ONE confirmation method. Engulfing patterns are not used.
 
 The important sequence is:
 
-**Low-side liquidity sweep → bullish confirmation → LONG**
-
-Do not require both Method A and Method B. Either valid confirmation method may trigger the trade.
+**Low-side liquidity sweep → green candle closes back above the level → LONG**
 
 ---
 
@@ -112,9 +168,11 @@ For a long trade:
 
 **Initial SL = Low of the liquidity-sweep candle**
 
-If the engulfing candle is the confirmation candle, the strategy should still identify the candle responsible for the actual liquidity sweep and use that candle's extreme for the initial SL.
+When the confirming rejection candle is NOT the sweep candle, the strategy must still identify the candle responsible for the actual liquidity sweep and use that candle's extreme for the initial SL.
 
-Do not arbitrarily use the engulfing candle's high/low unless that candle is also the actual sweep candle.
+Do not use the confirming candle's high/low unless that candle is also the actual sweep candle.
+
+A configurable buffer may push the stop a set number of ticks beyond the sweep candle's extreme; zero means exactly the extreme.
 
 ---
 
@@ -355,43 +413,47 @@ For a LOW-side liquidity sweep:
 
 **Low of candle must trade below the relevant VAL/RL level.**
 
-The strategy must then determine whether the required rejection/engulfing confirmation exists.
+The strategy must then determine whether the required rejection-candle confirmation exists — see section 11.
 
 ---
 
-# 11. ENGULFING CONFIRMATION
+# 11. REJECTION CANDLE CONFIRMATION
 
-Implement engulfing confirmation carefully.
+There is exactly one confirmation rule. Implement it carefully.
 
-### Bearish Engulfing
+### The rule
 
-For a short setup:
+| Side | Swept level | Requires |
+|---|---|---|
+| SHORT | VAH or RH | `close < open` **and** `close < level` |
+| LONG  | VAL or RL | `close > open` **and** `close > level` |
 
-* Previous candle should be bullish (or otherwise satisfy the platform's standard bearish-engulfing definition).
-* Current candle should be bearish.
-* Current candle's body should engulf the previous candle's body according to the standard engulfing definition.
-* The pattern must occur at/around the swept VAH or RH level.
-* The liquidity sweep must have occurred before or as part of the setup.
+Both halves are mandatory. The colour proves the candle was rejected; closing back
+through the level proves the rejection happened **at that level**.
 
-Sequence:
+### Timing
 
-**Sweep high → bearish engulfing at level → SHORT**
+* The **sweep candle itself** may confirm, if it satisfies both conditions.
+* Otherwise the swept level stays armed for a configurable number of following
+  candles (the confirmation window). Zero means the sweep candle only; one means
+  the sweep candle or the one immediately after it.
+* When the window expires without a qualifying candle, the sweep is discarded and
+  that liquidity event produces no trade.
 
-### Bullish Engulfing
+### Locality
 
-For a long setup:
+A confirming candle **after** the sweep candle must have traded within a
+configurable proximity band of the swept level. Without this, any red candle
+anywhere inside the confirmation window would confirm the setup.
 
-* Previous candle should be bearish (or otherwise satisfy the platform's standard bullish-engulfing definition).
-* Current candle should be bullish.
-* Current candle's body should engulf the previous candle's body according to the standard engulfing definition.
-* The pattern must occur at/around the swept VAL or RL level.
-* The liquidity sweep must have occurred before or as part of the setup.
+The sweep candle is exempt: it traded through the level by definition.
 
-Sequence:
+Do not trigger a trade on a rejection candle unrelated to the swept indicator level.
 
-**Sweep low → bullish engulfing at level → LONG**
+### Not used
 
-Do not trigger an engulfing trade somewhere unrelated to the swept indicator level.
+Engulfing patterns play no part in this strategy. The previous candle's body,
+open and close are irrelevant to confirmation.
 
 ---
 
@@ -403,7 +465,7 @@ Do not trigger an engulfing trade somewhere unrelated to the swept indicator lev
 
 ↓
 
-**Rejection OR bearish engulfing confirmation**
+**Red candle closes back below the swept level**
 
 ↓
 
@@ -445,7 +507,7 @@ OR
 
 ↓
 
-**Rejection OR bullish engulfing confirmation**
+**Green candle closes back above the swept level**
 
 ↓
 
@@ -533,18 +595,37 @@ Before writing the strategy:
 
 Make the strategy fully backtestable on MNQ.
 
-Expose configurable settings for:
+### Timeframe
 
-* Contract quantity
-* Trading session
-* Long enabled/disabled
-* Short enabled/disabled
+The strategy must run on either a **1 Minute** or a **5 Minute** primary data
+series, chosen by the user, and must reject any other series with a clear error
+rather than running against it.
+
+The primary series IS the profile's resolution — the volume profile is built from
+these bars — so the two timeframes legitimately produce different levels. The
+choice is taken from the platform's own data-series setting rather than from a
+separate strategy parameter, so the strategy and the chart can never disagree
+about which bars built the levels.
+
+### Configurable settings
+
+* Contract quantity, or risk-based sizing with a hard cap
+* Profile session window, range session window, and their timezone
+* "No entries after" cutoff
+* Long enabled/disabled, short enabled/disabled
+* Confirmation window (candles after the sweep)
+* Level proximity band
+* Stop buffer beyond the sweep candle's extreme
+* Minimum target distance
+* Break-even on/off, and its offset
 * Slippage
 * Commission where supported
 
-Display clear visual markers for:
+### Visual markers
 
-* Liquidity sweep
+Display clear markers for:
+
+* The five fixed levels, drawn from the freeze point through the trading window
 * Entry
 * Initial SL
 * Selected TP
@@ -552,19 +633,40 @@ Display clear visual markers for:
 * Break-even activation
 * Final exit
 
+Each level must be drawn as **one line with one label per trading window**. A
+level can be swept many times in a session, and a mark per sweep buries the chart
+in repeated text — so sweeps are not individually labelled.
+
+Visuals must be switchable off: per-bar drawing is the single largest cost in a
+backtest.
+
+### Diagnostics
+
+A run that produces no trades must report WHERE it stopped — bars processed, bars
+inside each session, levels published, sweeps detected, confirmations, entries,
+and a count of each rejection reason. "Nothing happened" is not an acceptable
+output.
+
 ---
 
 # CORE STRATEGY RULE
 
 The most important logic is:
 
+**LEVELS ARE FIXED AT THE RANGE-SESSION CLOSE**
+
+All five levels are committed when the range session ends and cannot move until
+the next range close. Trading runs from that close to the user's cutoff time.
+
 **HIGH-SIDE SWEEP → SHORT**
 
-VAH or RH is swept → bearish rejection OR bearish engulfing → SHORT.
+VAH or RH is swept → a RED candle closes back BELOW that level → SHORT.
 
 **LOW-SIDE SWEEP → LONG**
 
-VAL or RL is swept → bullish rejection OR bullish engulfing → LONG.
+VAL or RL is swept → a GREEN candle closes back ABOVE that level → LONG.
+
+The sweep candle itself may be the confirming candle.
 
 **TP IS DYNAMIC**
 

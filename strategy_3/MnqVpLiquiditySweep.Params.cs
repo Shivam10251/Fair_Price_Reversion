@@ -76,18 +76,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public string RangeSession { get; set; }
 
 		// ── 3 · SWEEP & CONFIRMATION ──────────────────────────────────────────────
-		[NinjaScriptProperty]
-		[Display(Name = "Confirmation methods", Description = "RejectionOrEngulfing is the specified behaviour: either method may trigger the trade.", GroupName = G_SWP, Order = 0)]
-		public VpsConfirmMode ConfirmMode { get; set; }
-
+		// The confirmation is a single rule: after a level is swept, a candle must
+		// close in the rejecting COLOUR *and* close back THROUGH the swept level —
+		// red and below it for a short, green and above it for a long. The sweep
+		// candle itself counts when it does both.
 		[NinjaScriptProperty]
 		[Range(0, 50)]
-		[Display(Name = "Engulfing window (bars after the sweep)", Description = "1 = literally 'the following candle'. Higher values keep the sweep armed longer. The sweep candle's own rejection is always resolved on the sweep candle itself.", GroupName = G_SWP, Order = 1)]
+		[Display(Name = "Confirmation window (bars after the sweep)", Description = "How long a swept level stays armed waiting for its red/green rejection candle. 0 = the sweep candle only. 1 = the sweep candle or the one after it. Higher values keep the sweep armed longer.", GroupName = G_SWP, Order = 1)]
 		public int SweepConfirmWindowBars { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0, 100000)]
-		[Display(Name = "Level proximity (ticks)", Description = "How close to the swept level the engulfing candle must trade for the pattern to count as being 'at/around' that level.", GroupName = G_SWP, Order = 2)]
+		[Display(Name = "Level proximity (ticks)", Description = "Applies only to a confirmation candle AFTER the sweep candle: it must still have traded within this band of the swept level, so an unrelated candle later in the window cannot confirm the setup. The sweep candle traded through the level by definition and is never proximity-tested.", GroupName = G_SWP, Order = 2)]
 		public double LevelProximityTicks { get; set; }
 
 		[NinjaScriptProperty]
@@ -188,7 +188,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 			ValueAreaPercent = 70.0;
 			RangeSession     = "0330-0530";
 
-			ConfirmMode            = VpsConfirmMode.RejectionOrEngulfing;
 			SweepConfirmWindowBars = 1;
 			LevelProximityTicks    = 20;
 			StopBufferTicks        = 0;
