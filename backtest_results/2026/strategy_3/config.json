@@ -1,0 +1,63 @@
+{
+  "instrument": "MNQ",
+  "merge_policy": "MergeNonBackAdjusted",
+  "session_template": "CME US Index Futures ETH",
+  "bar_type": "Minute",
+  "bar_value": 1,
+  "date_range": {
+    "start": "2026-01-01",
+    "end": "2026-09-02"
+  },
+  "data_availability_verified": {
+    "source": "C:/Users/DELL/Documents/NinjaTrader 8/db/minute/",
+    "contracts_present": [
+      "MNQ 03-26",
+      "MNQ 06-26",
+      "MNQ 09-26"
+    ],
+    "distinct_2026_days_with_1min_data": 200,
+    "first_day": "2026-01-01",
+    "last_day": "2026-09-02",
+    "note": "MNQ 12-26 has no 1-minute data on this machine; it is outside the range anyway."
+  },
+  "strategy": "Strategy 3",
+  "ninjatrader_strategy_name": "MnqVpLiquiditySweep",
+  "source_files": [
+    "strategy_3/MnqVpLiquiditySweep.cs",
+    "strategy_3/MnqVpLiquiditySweep.Params.cs",
+    "strategy_3/MnqVpLiquiditySweep.Setup.cs",
+    "strategy_3/MnqVpLiquiditySweep.Trading.cs",
+    "strategy_3/VPS/**  (6 files)"
+  ],
+  "logic": {
+    "concept": "Volume-profile levels (VAH/POC/VAL) from the profile session and range levels (RH/RL) from the range session. A liquidity sweep of a high-side level that is rejected or engulfed goes short; a low-side sweep goes long.",
+    "entry": "Fresh penetration of VAH/RH (short) or VAL/RL (long), confirmed by same-candle rejection OR an engulfing candle within the confirmation window",
+    "stop_loss": "The SWEEP candle's extreme (absolute price), + StopBufferTicks",
+    "take_profit": "Farthest qualifying opposite-side level (dynamic, never a fixed R)",
+    "break_even": "Any OTHER indicator line strictly between entry and target, once touched, moves the stop to the exact entry fill",
+    "position_sizing": "Fixed 1 contract (spec default); RiskBased mode available"
+  },
+  "dependencies": "VPS/* helper classes only. The volume profile is an in-strategy C# port of the supplied TradingView Pine indicator's f_profile(); Pine cannot be called from NinjaScript, so no external indicator is referenced.",
+  "timeframe_requirement": "HARD REQUIREMENT: 1 Minute primary. Anything else is a config error and blocks all orders.",
+  "parameters_as_run": {
+    "SessionTimeZone": "Asia/Kolkata",
+    "AutoAdjustForUsDst": true,
+    "ProfileSession": "1900-0130  (= 0930-1600 New York)",
+    "RangeSession": "0330-0530  (= 1800-2000 New York)",
+    "EntryCutoff": "1500",
+    "ProfileBins": 60,
+    "ValueAreaPercent": 70.0,
+    "SweepConfirmWindowBars": 1,
+    "LevelProximityTicks": 20,
+    "MinTargetDistanceTicks": 4,
+    "TargetTieBreak": "PreferRange",
+    "UseBreakEven": true,
+    "SizingMode": "Fixed",
+    "Contracts": 1,
+    "UseTickPrecision": true,
+    "ShowVisuals": false
+  },
+  "order_fill_resolution": "High / Tick / 1  (set by the strategy when UseTickPrecision is on)",
+  "commission_note": "Set on the NinjaTrader account commission template, not in NinjaScript.",
+  "status": "PENDING_RUN"
+}

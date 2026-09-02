@@ -10,9 +10,6 @@
 using System;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
-using System.Windows.Media;
-using System.Xml.Serialization;
-using NinjaTrader.Gui;
 using NinjaTrader.NinjaScript.Strategies.FPMR;
 #endregion
 
@@ -26,17 +23,22 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private const string G_TM   = "4 · Trade Management";
 		private const string G_XTP  = "4b · Extended-move TP";
 		private const string G_RISK = "5 · Risk Sizing";
+		private const string G_LIM  = "5b · Daily Limits";
 		private const string G_NEWS = "6 · News Fair Price";
+		private const string G_NEWX = "6b · News Surprise";
 		private const string G_FLT  = "7 · Filters";
-		private const string G_VIS  = "8 · Visualisation";
 		private const string G_BT   = "9 · Backtest Fidelity";
 		private const string G_DBG  = "10 · Debug";
 
 		// ── 1 · SESSIONS ──────────────────────────────────────────────────────────
 		[NinjaScriptProperty]
 		[TypeConverter(typeof(TimeZoneOptionConverter))]
-		[Display(Name = "Session timezone", Description = "Pick from the list or type any id TimeZoneRegistry understands: an IANA id (America/New_York, Asia/Kolkata), a Windows id (India Standard Time), or the shorthand IST. All session windows and the news file are evaluated here.", GroupName = G_SES, Order = 0)]
+		[Display(Name = "Session timezone", Description = "The zone every session window below is TYPED in. Pick from the list or type any id TimeZoneRegistry understands: an IANA id (Asia/Kolkata, America/New_York), a Windows id (India Standard Time), or the shorthand IST.", GroupName = G_SES, Order = 0)]
 		public string SessionTimeZoneId { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Times are SUMMER (auto-adjust for winter)", Description = "ON: type every window as its US-DST (summer) time and the strategy pins it to the equivalent US Eastern time, so in winter it shifts an hour later on your clock automatically and keeps tracking the same market hours. OFF: the times are taken literally in the zone above and never move.", GroupName = G_SES, Order = 1)]
+		public bool AutoAdjustForUsDst { get; set; }
 
 		[NinjaScriptProperty]
 		[TypeConverter(typeof(TimeZoneOptionConverter))]
@@ -85,16 +87,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[Range(0.0, double.MaxValue)]
 		[Display(Name = "Zone distance", Description = "Half-width of the no-new-entry zone around Fair Price.", GroupName = G_FP, Order = 3)]
 		public double ZoneDistance { get; set; }
-
-		[NinjaScriptProperty]
-		[Range(0, 20)]
-		[Display(Name = "Line forward extension (bars)", GroupName = G_FP, Order = 4)]
-		public int FairPriceExtendBars { get; set; }
-
-		[NinjaScriptProperty]
-		[Range(1, 50)]
-		[Display(Name = "Fair Price drawings kept", GroupName = G_FP, Order = 5)]
-		public int FairPriceHistory { get; set; }
 
 		// ── 3 · MARKET STRUCTURE ──────────────────────────────────────────────────
 		[NinjaScriptProperty]
@@ -221,6 +213,28 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[Display(Name = "Max contracts", GroupName = G_RISK, Order = 3)]
 		public int MaxContracts { get; set; }
 
+		// ── 5b · DAILY LIMITS ─────────────────────────────────────────────────────
+		// One realised-P&L budget per TRADING DAY, shared by every session window.
+		// The day is the strategy's own trading day (see GetTradingDay), so a CME
+		// evening open belongs to the following day exactly as the trade counters do.
+		[NinjaScriptProperty]
+		[Display(Name = "Use daily P&L limits", Description = "Master toggle for the daily loss and profit limits. Off = no P&L gating at all.", GroupName = G_LIM, Order = 0)]
+		public bool UseDailyPnlLimits { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0, double.MaxValue)]
+		[Display(Name = "Daily loss limit ($)", Description = "Realised loss for the trading day that stops all further entries. 0 = no loss limit. Entered as a positive number.", GroupName = G_LIM, Order = 1)]
+		public double DailyLossLimitUSD { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0, double.MaxValue)]
+		[Display(Name = "Daily profit limit ($)", Description = "Realised profit for the trading day that stops all further entries. 0 = no profit limit.", GroupName = G_LIM, Order = 2)]
+		public double DailyProfitLimitUSD { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Flatten open trade when a limit is hit", Description = "On: the open position is closed at market the moment a limit is breached. Off: no NEW entries, but the trade already running is left to reach its own stop or target.", GroupName = G_LIM, Order = 3)]
+		public bool FlattenOnDailyLimit { get; set; }
+
 		// ── 6 · NEWS FAIR PRICE ───────────────────────────────────────────────────
 		[NinjaScriptProperty]
 		[Display(Name = "Use news Fair Price", Description = "Master toggle. Off = behaviour is identical to the Pine version.", GroupName = G_NEWS, Order = 0)]
@@ -260,6 +274,50 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[Display(Name = "Trading start on a news session", Description = "AfterNewsCandle: trading may begin before the session opens. AfterSessionOpen: normal session gating.", GroupName = G_NEWS, Order = 8)]
 		public FpNewsTradingStart NewsTradingStart { get; set; }
 
+		// ── 6b · NEWS SURPRISE ────────────────────────────────────────────────────
+		// Decides WHICH price is fair after a release, from forecast vs actual.
+		//   actual ~= forecast      -> priced in; the pre-news price stays fair.
+		//   meaningful difference   -> the market may have repriced; wait for the
+		//                              post-news consolidation to name a new one.
+		// Needs a calendar file carrying forecast and actual columns. Without them
+		// the unknown-value rule below decides, and nothing here changes behaviour.
+		[NinjaScriptProperty]
+		[Display(Name = "Use surprise classification", Description = "Master toggle for group 6b. OFF = every qualifying release uses the pre-news price as Fair Price, i.e. exactly the previous behaviour.", GroupName = G_NEWX, Order = 0)]
+		public bool UseNewsSurprise { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0, 1000)]
+		[Display(Name = "Expected tolerance (%)", Description = "|actual - forecast| at or below this share of the larger value counts as EXPECTED, so the pre-news price stays fair.", GroupName = G_NEWX, Order = 1)]
+		public double NewsExpectedTolerancePercent { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0, 10000)]
+		[Display(Name = "Large surprise threshold (%)", Description = "Above this the release counts as a LARGE surprise. Between the two thresholds it is a partial surprise.", GroupName = G_NEWX, Order = 2)]
+		public double NewsUnexpectedThresholdPercent { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "When forecast or actual is missing", Description = "A forward-looking calendar has no actuals. TreatAsExpected keeps the old pre-news behaviour; SkipEvent makes the release override nothing.", GroupName = G_NEWX, Order = 3)]
+		public FpNewsUnknownRule NewsUnknownRule { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(1, 200)]
+		[Display(Name = "Consolidation window (bars)", Description = "Consecutive reference candles that must fit inside the range below for the market to count as having accepted a new price.", GroupName = G_NEWX, Order = 4)]
+		public int NewsConsolidationBars { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(1, 100000)]
+		[Display(Name = "Consolidation max range (ticks)", Description = "Total high-low span the window must fit inside. Wider = accepts a new Fair Price sooner and looser.", GroupName = G_NEWX, Order = 5)]
+		public double NewsConsolidationRangeTicks { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(1, 2000)]
+		[Display(Name = "Consolidation search limit (bars)", Description = "Give up this many candles after the release. On giving up the news override is abandoned and the session runs without a news Fair Price.", GroupName = G_NEWX, Order = 6)]
+		public int NewsConsolidationSearchBars { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Allow continuation on a large surprise", Description = "ASSUMPTION, defaulted OFF — you left this question unanswered. On: after a LARGE surprise the strategy trades WITH the displacement instead of fading it, inverting its normal side rule. Off: it waits for the new Fair Price and reverts to that.", GroupName = G_NEWX, Order = 7)]
+		public bool NewsAllowContinuation { get; set; }
+
 		// ── 7 · FILTERS ───────────────────────────────────────────────────────────
 		[NinjaScriptProperty]
 		[Display(Name = "Use EMA filter", Description = "Master switch. BOTH EMAs enabled = crossover rule (long needs EMA1 > EMA2). ONE enabled = price-vs-EMA rule (long needs close above it). Neither = no effect.", GroupName = G_FLT, Order = 0)]
@@ -287,53 +345,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[Display(Name = "Use VWAP filter", Description = "Session-anchored. Long needs close above, short needs close below. Off = zero effect.", GroupName = G_FLT, Order = 5)]
 		public bool UseVwapFilter { get; set; }
 
-		// ── 8 · VISUALISATION ─────────────────────────────────────────────────────
-		[NinjaScriptProperty]
-		[Display(Name = "Show Fair Price line", GroupName = G_VIS, Order = 0)]
-		public bool ShowFairPriceLine { get; set; }
-
-		[NinjaScriptProperty]
-		[Display(Name = "Show Fair Price zone", Description = "The +/- Zone distance band around Fair Price — the region that decides above / below / inside.", GroupName = G_VIS, Order = 1)]
-		public bool ShowFairPriceZone { get; set; }
-
-		[NinjaScriptProperty]
-		[Display(Name = "Show SL / TP zones", Description = "Shaded stop-loss and take-profit zones on every trade, with a dashed level line and price label. Independent of \"Show full visuals\".", GroupName = G_VIS, Order = 2)]
-		public bool ShowTradeZones { get; set; }
-
-		[NinjaScriptProperty]
-		[Display(Name = "Shade session windows", Description = "Highlights each active session window across the full chart height.", GroupName = G_VIS, Order = 3)]
-		public bool ShowSessionShading { get; set; }
-
-		[XmlIgnore]
-		[Display(Name = "Session shading colour", GroupName = G_VIS, Order = 4)]
-		public Brush SessionShadingBrush { get; set; }
-
-		[Browsable(false)]
-		public string SessionShadingBrushSerialize
-		{
-			get { return Serialize.BrushToString(SessionShadingBrush); }
-			set { SessionShadingBrush = Serialize.StringToBrush(value); }
-		}
-
-		[NinjaScriptProperty]
-		[Range(1, 100)]
-		[Display(Name = "Session shading opacity", Description = "1-100. Keep it low so the shading never competes with the candles.", GroupName = G_VIS, Order = 5)]
-		public int SessionShadingOpacity { get; set; }
-
-		[NinjaScriptProperty]
-		[Range(1, 200)]
-		[Display(Name = "Session shadings kept", GroupName = G_VIS, Order = 6)]
-		public int SessionShadingHistory { get; set; }
-
-		[NinjaScriptProperty]
-		[Range(1, 200)]
-		[Display(Name = "Trade drawings kept", GroupName = G_VIS, Order = 7)]
-		public int TradeDrawingHistory { get; set; }
-
-		[NinjaScriptProperty]
-		[Display(Name = "Show full visuals (diagnostics)", Description = "Adds the structure diagnostic layer: HH/HL/LH/LL swing labels, CHoCH/BOS/DISP marks and the dotted broken-level line. Slow — leave off for real backtests.", GroupName = G_VIS, Order = 8)]
-		public bool ShowFullVisuals { get; set; }
-
 		// ── 9 · BACKTEST FIDELITY ─────────────────────────────────────────────────
 		[NinjaScriptProperty]
 		[Display(Name = "Use tick precision", Description = "Resolves same-bar TP/SL from 1-tick data instead of an assumption. Slower, and needs tick history.", GroupName = G_BT, Order = 0)]
@@ -345,31 +356,29 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public bool VerboseLogging { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Mark rejected setups on chart", GroupName = G_DBG, Order = 1)]
-		public bool ShowRejectionMarks { get; set; }
-
-		[NinjaScriptProperty]
-		[Display(Name = "Show state panel", GroupName = G_DBG, Order = 2)]
-		public bool ShowStatePanel { get; set; }
+		[Display(Name = "Print news event reports", Description = "Prints the forecast/actual/fair-price judgement for every release the strategy acts on.", GroupName = G_DBG, Order = 1)]
+		public bool PrintNewsReports { get; set; }
 
 		/// <summary>Applies every default. Called from State.SetDefaults.</summary>
 		private void ApplyDefaults()
 		{
-			SessionTimeZoneId         = "America/New_York";
+			// Windows are typed in IST as their SUMMER (US-DST) times. The winter
+			// equivalents are derived, never typed:
+			//   1900-1930 IST summer = 0930-1000 New York = 2000-2030 IST winter
+			SessionTimeZoneId         = "Asia/Kolkata";
+			AutoAdjustForUsDst        = true;
 			BarTimeZoneOverrideId     = string.Empty;
 			Session1Enabled           = true;
-			Session1Window            = "0930-1000";
+			Session1Window            = "1900-1930";
 			Session2Enabled           = false;
-			Session2Window            = "1030-1130";
+			Session2Window            = "2000-2100";
 			Session3Enabled           = false;
-			Session3Window            = "1400-1500";
+			Session3Window            = "2330-0030";
 
 			FairPriceSource           = FpSource.Close;
 			FairPriceReferenceMinutes = 1;
 			ZoneUnit                  = FpZoneUnit.Points;
 			ZoneDistance              = 20.0;
-			FairPriceExtendBars       = 5;
-			FairPriceHistory          = 5;
 
 			PivotLeftBars             = 3;
 			PivotRightBars            = 2;
@@ -418,21 +427,24 @@ namespace NinjaTrader.NinjaScript.Strategies
 			EmaSlowLength  = 21;
 			UseVwapFilter  = false;
 
-			ShowFairPriceLine     = true;
-			ShowFairPriceZone     = true;
-			ShowFullVisuals       = false;
-			ShowTradeZones        = true;
-			ShowSessionShading    = true;
-			SessionShadingBrush   = Brushes.LightBlue;
-			SessionShadingOpacity = 12;
-			SessionShadingHistory = 20;
-			TradeDrawingHistory   = 30;
+			UseDailyPnlLimits   = false;
+			DailyLossLimitUSD   = 400.0;
+			DailyProfitLimitUSD = 600.0;
+			FlattenOnDailyLimit = false;
+
+			UseNewsSurprise                = false;
+			NewsExpectedTolerancePercent   = 5.0;
+			NewsUnexpectedThresholdPercent = 25.0;
+			NewsUnknownRule                = FpNewsUnknownRule.TreatAsExpected;
+			NewsConsolidationBars          = 5;
+			NewsConsolidationRangeTicks    = 40.0;
+			NewsConsolidationSearchBars    = 60;
+			NewsAllowContinuation          = false;
 
 			UseTickPrecision = true;
 
-			VerboseLogging     = false;
-			ShowRejectionMarks = false;
-			ShowStatePanel     = false;
+			VerboseLogging   = false;
+			PrintNewsReports = true;
 		}
 	}
 }

@@ -1,0 +1,4 @@
+strategy,total_trades,net_profit,profit_factor,max_drawdown,win_rate,average_trade,long_trades,short_trades,commission,sharpe,sortino,status
+FairPriceMeanReversion,,,,,,,,,,,,PENDING_RUN
+MultiSessionFirstCandleStrategy,,,,,,,,,,,,PENDING_RUN
+MnqVpLiquiditySweep,,,,,,,,,,,,PENDING_RUN

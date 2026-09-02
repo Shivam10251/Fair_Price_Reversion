@@ -1,0 +1,59 @@
+{
+  "instrument": "MNQ",
+  "merge_policy": "MergeNonBackAdjusted",
+  "session_template": "CME US Index Futures ETH",
+  "bar_type": "Minute",
+  "bar_value": 1,
+  "date_range": {
+    "start": "2026-01-01",
+    "end": "2026-09-02"
+  },
+  "data_availability_verified": {
+    "source": "C:/Users/DELL/Documents/NinjaTrader 8/db/minute/",
+    "contracts_present": [
+      "MNQ 03-26",
+      "MNQ 06-26",
+      "MNQ 09-26"
+    ],
+    "distinct_2026_days_with_1min_data": 200,
+    "first_day": "2026-01-01",
+    "last_day": "2026-09-02",
+    "note": "MNQ 12-26 has no 1-minute data on this machine; it is outside the range anyway."
+  },
+  "strategy": "Strategy 1",
+  "ninjatrader_strategy_name": "FairPriceMeanReversion",
+  "source_files": [
+    "src/NinjaTrader8/Strategies/FairPriceMeanReversion.cs",
+    "src/NinjaTrader8/Strategies/FairPriceMeanReversion.Params.cs",
+    "src/NinjaTrader8/Strategies/FairPriceMeanReversion.Setup.cs",
+    "src/NinjaTrader8/Strategies/FairPriceMeanReversion.Trading.cs",
+    "src/NinjaTrader8/Strategies/FPMR/**  (18 files)"
+  ],
+  "logic": {
+    "concept": "Fair Price is the first reference candle of a session (or a news candle). Price above the zone permits shorts, below permits longs. A market-structure CHoCH/BOS break of the active swing level is the displacement/entry candle, traded back toward Fair Price.",
+    "entry": "CHoCH or BOS break of the active swing level, on the correct side of the Fair Price zone",
+    "stop_loss": "Displacement candle extreme +/- StopBufferTicks (absolute price)",
+    "take_profit": "RewardRatio multiple of risk, or Fair Price when the extended-TP override is armed",
+    "break_even": "None",
+    "position_sizing": "Risk-based: RiskTargetUSD 100 +/- 20, hard cap 150, max 10 contracts"
+  },
+  "dependencies": "FPMR/* helper classes only. No external NinjaScript indicators.",
+  "timeframe_requirement": "Designed for 1 Minute. A different primary triggers an extra 1-minute series.",
+  "parameters_as_run": {
+    "SessionTimeZoneId": "Asia/Kolkata",
+    "AutoAdjustForUsDst": true,
+    "Session1Window": "1900-1930 (enabled)",
+    "Session2Window": "2000-2100 (disabled)",
+    "Session3Window": "2330-0030 (disabled)",
+    "UseTickPrecision": true,
+    "UseDailyPnlLimits": false,
+    "UseNewsFairPrice": false,
+    "UseEmaFilter": false,
+    "UseVwapFilter": false,
+    "OnlyOneOpenTrade": true,
+    "MaxTradesPerDay": 3
+  },
+  "order_fill_resolution": "High / Tick / 1  (set by the strategy when UseTickPrecision is on)",
+  "commission_note": "Set on the NinjaTrader account commission template, not in NinjaScript.",
+  "status": "PENDING_RUN"
+}

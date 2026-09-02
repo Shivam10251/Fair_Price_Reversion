@@ -1,0 +1,22 @@
+# Execution log
+
+2026-09-02  Located and inspected all three strategies.
+2026-09-02  Verified MNQ 1-minute data in NinjaTrader's db:
+              contracts MNQ 03-26 / 06-26 / 09-26
+              200 distinct trading days, 2026-01-01 -> 2026-09-02
+              MNQ 12-26 has no 1-minute data (outside the range).
+2026-09-02  Compile verification (csc.exe vs NinjaTrader assemblies):
+              FairPriceMeanReversion        23 files  exit 0
+              MnqVpLiquiditySweep           10 files  exit 0
+              MultiSessionFirstCandleStrategy 1 file  exit 0
+2026-09-02  Deployed all three to Documents/NinjaTrader 8/bin/Custom/Strategies.
+2026-09-02  Unit test: volume profile port vs 5 hand-computed cases - 18/18 pass.
+2026-09-02  Unit test: DST rebasing, summer and winter - 14/14 pass.
+
+2026-09-02  BACKTEST NOT EXECUTED.
+              The NinjaTrader 8 Strategy Analyzer is a WPF GUI application with no
+              headless mode, no backtest CLI, and no external API for launching a
+              backtest. No UI-automation tool was available in this environment.
+              Results are therefore marked PENDING_RUN rather than estimated.
+              Next step: run the three backtests per README.md, export, then run
+              scripts/import_nt8_results.py.

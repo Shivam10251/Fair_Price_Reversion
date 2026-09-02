@@ -1,0 +1,7 @@
+# Error log - FairPriceMeanReversion
+
+Compile errors encountered and resolved, and runtime issues observed.
+Compile verification: csc.exe (.NET Framework 4.8) against the NinjaTrader assemblies.
+NinjaTrader's own compiler (F5) is authoritative and has NOT been run by the assistant.
+
+No compiler errors. Compiles clean (exit 0).

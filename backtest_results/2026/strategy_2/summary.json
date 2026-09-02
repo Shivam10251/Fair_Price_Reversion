@@ -1,0 +1,48 @@
+{
+  "strategy": "Strategy 2",
+  "ninjatrader_strategy_name": "MultiSessionFirstCandleStrategy",
+  "instrument": "MNQ",
+  "year": 2026,
+  "date_range": {
+    "start": "2026-01-01",
+    "end": "2026-09-02"
+  },
+  "configuration": {
+    "merge_policy": "MergeNonBackAdjusted",
+    "timeframe": "1 Minute",
+    "session_template": "CME US Index Futures ETH"
+  },
+  "status": "PENDING_RUN",
+  "status_reason": "No backtest has been executed. The NinjaTrader 8 Strategy Analyzer is a GUI application with no headless or CLI mode, so it could not be driven from here. Run it per backtest_results/README.md, export the results, then run scripts/import_nt8_results.py to populate this file.",
+  "performance": {
+    "net_profit": null,
+    "gross_profit": null,
+    "gross_loss": null,
+    "profit_factor": null,
+    "max_drawdown": null,
+    "sharpe_ratio": null,
+    "sortino_ratio": null,
+    "commission": null,
+    "total_slippage": null,
+    "percent_profitable": null,
+    "average_trade": null,
+    "average_winning_trade": null,
+    "average_losing_trade": null,
+    "largest_winning_trade": null,
+    "largest_losing_trade": null,
+    "max_consecutive_wins": null,
+    "max_consecutive_losses": null
+  },
+  "trades": {
+    "total": null,
+    "long": null,
+    "short": null,
+    "winning": null,
+    "losing": null,
+    "winning_long": null,
+    "winning_short": null,
+    "losing_long": null,
+    "losing_short": null,
+    "average_trade_duration": null
+  }
+}

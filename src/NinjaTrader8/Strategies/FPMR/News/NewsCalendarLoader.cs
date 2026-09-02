@@ -44,6 +44,9 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		private static readonly string[] DateKeys     = { "date" };
 		private static readonly string[] TimeKeys     = { "time" };
 		private static readonly string[] StampKeys    = { "datetime", "date_time", "date time", "timestamp", "released", "release time", "start" };
+		private static readonly string[] ForecastKeys = { "forecast", "consensus", "estimate", "expected", "survey" };
+		private static readonly string[] ActualKeys   = { "actual", "result", "release" };
+		private static readonly string[] PreviousKeys = { "previous", "prior", "prev", "revised" };
 
 		private static readonly string[] DatePatterns =
 		{
@@ -158,13 +161,26 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				return null;
 			}
 
+			// Forecast / actual are optional. A forward-looking calendar carries a
+			// forecast and a blank actual; a historical export carries both. Either
+			// way a missing value stays NaN and the unknown-value rule decides.
+			string forecastRaw = FirstValue(row, ForecastKeys);
+			string actualRaw   = FirstValue(row, ActualKeys);
+			string previousRaw = FirstValue(row, PreviousKeys);
+
 			return new NewsEvent
 			{
 				TimeSessionTz = whenSession,
 				Currency      = (FirstValue(row, CurrencyKeys) ?? string.Empty).Trim(),
 				Impact        = ParseImpact(FirstValue(row, ImpactKeys)),
 				Title         = (FirstValue(row, TitleKeys) ?? string.Empty).Trim(),
-				Source        = stamp ?? (datePart + " " + timePart)
+				Source        = stamp ?? (datePart + " " + timePart),
+				ForecastRaw   = forecastRaw,
+				ActualRaw     = actualRaw,
+				PreviousRaw   = previousRaw,
+				Forecast      = NewsSurpriseClassifier.ParseValue(forecastRaw),
+				Actual        = NewsSurpriseClassifier.ParseValue(actualRaw),
+				Previous      = NewsSurpriseClassifier.ParseValue(previousRaw)
 			};
 		}
 
