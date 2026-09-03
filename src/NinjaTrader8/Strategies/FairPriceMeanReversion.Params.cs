@@ -245,46 +245,54 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		// ── 6 · NEWS FAIR PRICE ───────────────────────────────────────────────────
 		[NinjaScriptProperty]
-		[Display(Name = "Use news Fair Price", Description = "Master toggle. Off = behaviour is identical to the Pine version.", GroupName = G_NEWS, Order = 0)]
+		[Display(Name = "Use news trading", Description = "MASTER on/off for every news-related entry and setup. Off = the calendar is never loaded and the strategy ignores news entirely — no news Fair Price, no pre-session news window, no surprise handling — regardless of the settings below. On = the individual news settings below take effect.", GroupName = G_NEWS, Order = 0)]
+		public bool UseNewsTrading { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Use news Fair Price", Description = "Sub-toggle under 'Use news trading'. Off = behaviour is identical to the Pine version (session first-candle Fair Price only).", GroupName = G_NEWS, Order = 1)]
 		public bool UseNewsFairPrice { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "News file path", Description = "ForexFactory export, .json or .csv. Loaded once at startup.", GroupName = G_NEWS, Order = 1)]
+		[Display(Name = "News file path", Description = "ForexFactory export, .json or .csv. Loaded once at startup.", GroupName = G_NEWS, Order = 2)]
 		public string NewsFilePath { get; set; }
 
 		[NinjaScriptProperty]
 		[TypeConverter(typeof(TimeZoneOptionConverter))]
-		[Display(Name = "News file timezone", Description = "Used only for rows WITHOUT an explicit UTC offset (i.e. every CSV row). ForexFactory's default profile is America/New_York.", GroupName = G_NEWS, Order = 2)]
+		[Display(Name = "News file timezone", Description = "Used only for rows WITHOUT an explicit UTC offset (i.e. every CSV row). ForexFactory's default profile is America/New_York.", GroupName = G_NEWS, Order = 3)]
 		public string NewsFileTimeZoneId { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "News CSV date format", Description = "Blank = auto-detect. Set a .NET format (e.g. MM-dd-yyyy) if auto-detection picks the wrong one.", GroupName = G_NEWS, Order = 3)]
+		[Display(Name = "News CSV date format", Description = "Blank = auto-detect. Set a .NET format (e.g. MM-dd-yyyy) if auto-detection picks the wrong one.", GroupName = G_NEWS, Order = 4)]
 		public string NewsCsvDateFormat { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0.0, 24.0)]
-		[Display(Name = "News lookback (hours)", Description = "X — how far before session open a release still qualifies.", GroupName = G_NEWS, Order = 4)]
+		[Display(Name = "News lookback (hours)", Description = "X — how far before session open a release still qualifies.", GroupName = G_NEWS, Order = 5)]
 		public double NewsLookbackHours { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "News impact filter", GroupName = G_NEWS, Order = 5)]
+		[Display(Name = "News impact filter", GroupName = G_NEWS, Order = 6)]
 		public FpNewsImpactFilter NewsImpactFilter { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "News currency filter", Description = "Comma separated, e.g. USD or USD,EUR. Blank = every currency.", GroupName = G_NEWS, Order = 6)]
+		[Display(Name = "News currency filter", Description = "Comma separated, e.g. USD or USD,EUR. Blank = every currency.", GroupName = G_NEWS, Order = 7)]
 		public string NewsCurrencyFilter { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Multiple event rule", Description = "Which release wins when several qualify in the window.", GroupName = G_NEWS, Order = 7)]
+		[Display(Name = "Multiple event rule", Description = "Which release wins when several qualify in the window.", GroupName = G_NEWS, Order = 8)]
 		public FpNewsMultipleEventRule NewsMultipleEventRule { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Trading start on a news session", Description = "AfterNewsCandle: trading may begin before the session opens. AfterSessionOpen: normal session gating.", GroupName = G_NEWS, Order = 8)]
+		[Display(Name = "Trading start on a news session", Description = "AfterNewsCandle: trading may begin before the session opens. AfterSessionOpen: normal session gating.", GroupName = G_NEWS, Order = 9)]
 		public FpNewsTradingStart NewsTradingStart { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Trade pre-session news reversions from news time", Description = "When a qualifying release BEFORE the session prices in (actual == forecast), any move it caused is treated as unfair and the pre-news price is marked as Fair Price to revert toward. Turn this on to begin trading that reversion from the NEWS candle through to session end, while the session window is still closed — e.g. news 18:00, session opens 19:00, trades from 18:00. Needs 'Use news Fair Price' on and a news lookback long enough to span the gap. Independent of 'Trading start on a news session'; applies only to the reversion (priced-in) case.", GroupName = G_NEWS, Order = 9)]
+		[Display(Name = "Trade pre-session news reversions from news time", Description = "When a qualifying release BEFORE the session prices in (actual == forecast), any move it caused is treated as unfair and the pre-news price is marked as Fair Price to revert toward. Turn this on to begin trading that reversion from the NEWS candle while the session window is still closed — e.g. news 18:00, session opens 19:00, trades from 18:00. Needs 'Use news Fair Price' on and a news lookback long enough to span the gap. Independent of 'Trading start on a news session'; applies only to the reversion (priced-in) case.", GroupName = G_NEWS, Order = 10)]
 		public bool NewsReversionFromNewsTime { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "News Fair Price expires at session open", Description = "On: a news Fair Price is valid only BEFORE the session opens (for the pre-session reversion window). At the session open it is discarded and the session's own first-candle Fair Price governs the rest of the session. Off: the news Fair Price governs the entire session (the original behaviour).", GroupName = G_NEWS, Order = 11)]
+		public bool NewsFairPriceExpiresAtSessionOpen { get; set; }
 
 		// ── 6b · NEWS SURPRISE ────────────────────────────────────────────────────
 		// Decides WHICH price is fair after a release, from forecast vs actual.
@@ -423,6 +431,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			RiskHardCapUSD   = 150.0;
 			MaxContracts     = 10;
 
+			UseNewsTrading        = true;
 			UseNewsFairPrice      = false;
 			NewsFilePath          = string.Empty;
 			NewsFileTimeZoneId    = "America/New_York";
@@ -432,7 +441,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 			NewsCurrencyFilter    = "USD";
 			NewsMultipleEventRule = FpNewsMultipleEventRule.First;
 			NewsTradingStart      = FpNewsTradingStart.AfterSessionOpen;
-			NewsReversionFromNewsTime = false;
+			NewsReversionFromNewsTime         = false;
+			NewsFairPriceExpiresAtSessionOpen = true;
 
 			UseEmaFilter   = false;
 			UseEma1        = true;

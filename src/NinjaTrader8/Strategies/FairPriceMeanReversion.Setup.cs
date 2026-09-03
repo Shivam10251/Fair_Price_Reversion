@@ -148,7 +148,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				Fail(windowError);
 
 			_structure = new StructureEngine(ActiveLevelMode);
-			_fair      = new FairPriceEngine();
+			_fair      = new FairPriceEngine(NewsFairPriceExpiresAtSessionOpen);
 			_vwap      = new SessionVwap();
 
 			// Only construct what the filter will actually read — an unused EMA is pure
@@ -197,7 +197,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_news     = null;
 			_newsLoad = null;
 
-			if (!UseNewsFairPrice)
+			// Master gate: with news trading off, the calendar is never loaded and no
+			// news-related entry or setup can fire, whatever the sub-toggles say.
+			if (!UseNewsTrading || !UseNewsFairPrice)
 				return;
 
 			_newsTz = TimeZoneRegistry.Resolve(NewsFileTimeZoneId);

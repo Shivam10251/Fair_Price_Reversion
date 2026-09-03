@@ -37,8 +37,13 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		private int      _currentSessionIndex;
 		private bool     _armed;
 
-		public FairPriceEngine()
+		/// <summary>When true a news Fair Price is discarded at the session open, handing
+		/// the session over to its own first-candle rule.</summary>
+		private readonly bool _newsExpiresAtSessionOpen;
+
+		public FairPriceEngine(bool newsExpiresAtSessionOpen)
 		{
+			_newsExpiresAtSessionOpen = newsExpiresAtSessionOpen;
 			Reset();
 		}
 
@@ -106,9 +111,11 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			{
 				_currentSessionIndex = sessionIndex;
 
-				if (pendingForThisSession != null)
+				if (pendingForThisSession != null && !_newsExpiresAtSessionOpen)
 				{
-					// News override wins outright: the first-candle rule is never armed.
+					// News override wins outright for the whole session: the first-candle
+					// rule is never armed. Only taken when the news price does NOT expire
+					// at the open.
 					FairPrice         = pendingForThisSession.FairPrice;
 					IsNewsFairPrice   = true;
 					NewsSessionIndex  = pendingForThisSession.SessionIndex;
