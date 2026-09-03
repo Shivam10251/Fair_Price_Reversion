@@ -41,7 +41,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private SessionManager        _sessions;
 		private StructureEngine       _structure;
 		private FairPriceEngine       _fair;
-		private ExtendedTpEngine      _xtp;
 		private SessionVwap           _vwap;
 		private NewsFairPriceResolver _news;
 		private NewsLoadResult        _newsLoad;
@@ -60,8 +59,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		private double _tickSize   = 0.01;
 		private double _pointValue = 1.0;
-		private double _zoneOffset;
-		private double _xtpOffset;
 
 		private bool   _configError;
 		private string _configErrorText = string.Empty;
@@ -92,6 +89,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		private Func<int, double> _highAt;
 		private Func<int, double> _lowAt;
+
+		// Most recent CONFIRMED swing prices, used by the structure trailing stop.
+		// Reset each session so a trade never trails a swing from a previous session.
+		private double _lastSwingHigh = double.NaN;
+		private double _lastSwingLow  = double.NaN;
 
 		// ── Cached per-bar values used by the trading partial ─────────────────────
 		private double _fairPrice, _zoneUpper, _zoneLower;
@@ -171,8 +173,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			_fairPrice  = _fair.FairPrice;
 			_hasFair    = _fair.HasFairPrice;
-			_zoneUpper  = _hasFair ? _fairPrice + _zoneOffset : double.NaN;
-			_zoneLower  = _hasFair ? _fairPrice - _zoneOffset : double.NaN;
+
+			// The non-tradeable zone is a percentage of Fair Price, so its width is
+			// recomputed each bar from the Fair Price now in force.
+			double zoneOffset = _hasFair ? Math.Abs(_fairPrice) * ZonePercent / 100.0 : double.NaN;
+			_zoneUpper  = _hasFair ? _fairPrice + zoneOffset : double.NaN;
+			_zoneLower  = _hasFair ? _fairPrice - zoneOffset : double.NaN;
 
 			_posState   = !_hasFair ? 0 : Close[0] > _zoneUpper ? 1 : Close[0] < _zoneLower ? -1 : 0;
 			_insideZone = _hasFair && Close[0] <= _zoneUpper && Close[0] >= _zoneLower;
@@ -197,7 +203,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 			{
 				_tradesSession   = 0;
 				_tradingStartBar = CurrentBar;
-				_xtp.OnSessionStart();
+				_lastSwingHigh   = double.NaN;
+				_lastSwingLow    = double.NaN;
 			}
 
 			_warmupDone = _tradingStartBar >= 0 && (CurrentBar - _tradingStartBar) >= MinBarsBeforeFirstTrade;
@@ -216,10 +223,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			double breakDown = BreakConfirmation == FpBreakConfirm.Close ? Close[0] : Low[0];
 			StructureBreak brk = _structure.DetectBreak(breakUp, breakDown, CurrentBar);
 
-			_xtp.OnBar(Close[0], _fairPrice, _hasFair);
-
 			if (brk.Occurred)
 				EvaluateEntry(brk);
+
+			UpdateTrailingStops();
 
 			MaintainOpenTrades(sessionEnd);
 		}
@@ -229,12 +236,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_effSession      = ev.Index;
 			_inTradingWindow = ev.InSession;
 
-			// AfterNewsCandle lets a session's trading begin from the news candle,
-			// before the session window itself opens. The news candle then acts as
-			// that session's logical start, so structure is not reset a second time
-			// when the clock reaches the session open.
+			// Two ways a session's trading can begin from the news candle, before the
+			// session window itself opens. The news candle then acts as that session's
+			// logical start, so structure is not reset a second time at the session open:
+			//   1. NewsTradingStart = AfterNewsCandle — the original, for any news bias.
+			//   2. NewsReversionFromNewsTime — restricted to the REVERSION case: a
+			//      priced-in release (actual == forecast) whose unnecessary move should
+			//      fall back to the pre-news Fair Price. Lets that reversion trade from
+			//      the news time (e.g. 18:00) even when the session opens later (19:00).
+			bool earlyNewsWindow =
+			       NewsTradingStart == FpNewsTradingStart.AfterNewsCandle
+			    || (NewsReversionFromNewsTime && _fair.NewsBias == FpNewsBias.Reversion);
+
 			if (UseNewsFairPrice
-			    && NewsTradingStart == FpNewsTradingStart.AfterNewsCandle
+			    && earlyNewsWindow
 			    && ev.Index == 0
 			    && _fair.IsNewsFairPrice
 			    && _fair.NewsSessionIndex != 0
@@ -323,11 +338,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			PivotResult ph = PivotDetector.PivotHigh(_highAt, PivotLeftBars, PivotRightBars, CurrentBar + 1);
 			if (ph.Found)
+			{
 				_structure.OnPivotHigh(ph.Price, CurrentBar - ph.BarsAgo, CurrentBar);
+				_lastSwingHigh = ph.Price;
+			}
 
 			PivotResult pl = PivotDetector.PivotLow(_lowAt, PivotLeftBars, PivotRightBars, CurrentBar + 1);
 			if (pl.Found)
+			{
 				_structure.OnPivotLow(pl.Price, CurrentBar - pl.BarsAgo, CurrentBar);
+				_lastSwingLow = pl.Price;
+			}
 		}
 
 		/// <summary>

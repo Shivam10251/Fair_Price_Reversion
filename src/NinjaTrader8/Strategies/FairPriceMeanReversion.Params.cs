@@ -21,7 +21,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private const string G_FP   = "2 · Fair Price";
 		private const string G_MS   = "3 · Market Structure";
 		private const string G_TM   = "4 · Trade Management";
-		private const string G_XTP  = "4b · Extended-move TP";
+		private const string G_FIX  = "4c · Fixed TP/SL";
+		private const string G_TRL  = "4d · Trailing Stop";
 		private const string G_RISK = "5 · Risk Sizing";
 		private const string G_LIM  = "5b · Daily Limits";
 		private const string G_NEWS = "6 · News Fair Price";
@@ -80,13 +81,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public int FairPriceReferenceMinutes { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Zone distance unit", GroupName = G_FP, Order = 2)]
-		public FpZoneUnit ZoneUnit { get; set; }
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Non-tradeable zone (% of Fair Price)", Description = "Half-width of the no-new-entry zone around Fair Price, as a PERCENTAGE of Fair Price. At FP 20,000 a value of 0.1 means 20 points either side. Must be smaller than Band 1 %.", GroupName = G_FP, Order = 2)]
+		public double ZonePercent { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0.0, double.MaxValue)]
-		[Display(Name = "Zone distance", Description = "Half-width of the no-new-entry zone around Fair Price.", GroupName = G_FP, Order = 3)]
-		public double ZoneDistance { get; set; }
+		[Display(Name = "Band 1 — near edge (% of Fair Price)", Description = "Outer edge of the NEAR setup band, as a percentage of Fair Price. From the zone edge out to here, take profit targets the risk/reward multiple below. Must be larger than the zone % and smaller than Band 2 %.", GroupName = G_FP, Order = 3)]
+		public double Band1Percent { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Band 2 — far edge (% of Fair Price)", Description = "Outer edge of the FAR setup band, as a percentage of Fair Price. From Band 1 out to here, take profit targets Fair Price itself. Beyond this an entry is too far and is skipped (TOO FAR). Must be larger than Band 1 %.", GroupName = G_FP, Order = 4)]
+		public double Band2Percent { get; set; }
 
 		// ── 3 · MARKET STRUCTURE ──────────────────────────────────────────────────
 		[NinjaScriptProperty]
@@ -110,7 +117,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		// ── 4 · TRADE MANAGEMENT ──────────────────────────────────────────────────
 		[NinjaScriptProperty]
 		[Range(0.1, double.MaxValue)]
-		[Display(Name = "Risk / Reward ratio", GroupName = G_TM, Order = 0)]
+		[Display(Name = "Band 1 (near) risk / reward ratio", Description = "Reward multiple used for NEAR-band setups (entry between the zone edge and Band 1). FAR-band setups target Fair Price instead and ignore this. Ignored entirely when Fixed TP/SL is on.", GroupName = G_TM, Order = 0)]
 		public double RewardRatio { get; set; }
 
 		[NinjaScriptProperty]
@@ -168,29 +175,30 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[Display(Name = "Same-candle TP/SL report", Description = "Reporting only. The real fill comes from the order fill resolution.", GroupName = G_TM, Order = 12)]
 		public FpSameBarPriority SameBarPriority { get; set; }
 
-		// ── 4b · EXTENDED-MOVE TP OVERRIDE ────────────────────────────────────────
+		// ── 4c · FIXED TP/SL ──────────────────────────────────────────────────────
+		// A master override for exits. When on, both the stop and the target are a
+		// fixed number of POINTS from the entry, replacing the structure stop and the
+		// distance-band targets for every trade. Entry gating is unchanged.
 		[NinjaScriptProperty]
-		[Display(Name = "Enable extended-move TP override", GroupName = G_XTP, Order = 0)]
-		public bool UseExtendedTp { get; set; }
+		[Display(Name = "Use fixed TP/SL (points)", Description = "Master override. ON: every trade takes a fixed points stop and a fixed points target from the entry, ignoring the structure stop, the band targets and the Band 1 R:R. OFF: the percentage-band system decides the target and the displacement candle decides the stop.", GroupName = G_FIX, Order = 0)]
+		public bool UseFixedTpSl { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0.0, double.MaxValue)]
-		[Display(Name = "Trigger: distance from Fair Price (%)", Description = "Percentage of Fair Price. At FP 29,300 a value of 0.5 means 146.5 points.", GroupName = G_XTP, Order = 1)]
-		public double ExtendedTpTriggerPercent { get; set; }
-
-		[NinjaScriptProperty]
-		[Range(1, int.MaxValue)]
-		[Display(Name = "Y — trades to apply it to", Description = "Refills to Y on every bar price is still beyond the trigger; resets to 0 at session start.", GroupName = G_XTP, Order = 2)]
-		public int ExtendedTpTradeCount { get; set; }
-
-		[NinjaScriptProperty]
-		[Display(Name = "TP target while active", GroupName = G_XTP, Order = 3)]
-		public FpExtendedTpMode ExtendedTpMode { get; set; }
+		[Display(Name = "Fixed stop loss (points)", Description = "Stop distance in points from the entry, used only when Fixed TP/SL is on. Must be greater than zero.", GroupName = G_FIX, Order = 1)]
+		public double FixedStopLossPoints { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0.0, double.MaxValue)]
-		[Display(Name = "TP offset from Fair Price", Description = "Same unit as the zone distance. Pulls the target back toward the entry.", GroupName = G_XTP, Order = 4)]
-		public double ExtendedTpOffset { get; set; }
+		[Display(Name = "Fixed take profit (points)", Description = "Target distance in points from the entry, used only when Fixed TP/SL is on. Must be greater than zero.", GroupName = G_FIX, Order = 2)]
+		public double FixedTakeProfitPoints { get; set; }
+
+		// ── 4d · TRAILING STOP ────────────────────────────────────────────────────
+		// Applies to the percentage-band setups (Near and Far). Ignored when Fixed
+		// TP/SL is on. The stop only ever tightens toward price, never loosens.
+		[NinjaScriptProperty]
+		[Display(Name = "Trailing stop mode", Description = "Off: the stop stays at entry. R-step: at +1R the stop moves to breakeven, +2R to +1R, +3R to +2R, and so on (R = entry-to-initial-stop). Structure: the stop trails confirmed swings — down to each lower swing high for shorts, up to each higher swing low for longs, using the same pivot and SL-buffer settings as entries. Ignored under Fixed TP/SL.", GroupName = G_TRL, Order = 0)]
+		public FpTrailMode TrailMode { get; set; }
 
 		// ── 5 · RISK SIZING ───────────────────────────────────────────────────────
 		[NinjaScriptProperty]
@@ -273,6 +281,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[NinjaScriptProperty]
 		[Display(Name = "Trading start on a news session", Description = "AfterNewsCandle: trading may begin before the session opens. AfterSessionOpen: normal session gating.", GroupName = G_NEWS, Order = 8)]
 		public FpNewsTradingStart NewsTradingStart { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Trade pre-session news reversions from news time", Description = "When a qualifying release BEFORE the session prices in (actual == forecast), any move it caused is treated as unfair and the pre-news price is marked as Fair Price to revert toward. Turn this on to begin trading that reversion from the NEWS candle through to session end, while the session window is still closed — e.g. news 18:00, session opens 19:00, trades from 18:00. Needs 'Use news Fair Price' on and a news lookback long enough to span the gap. Independent of 'Trading start on a news session'; applies only to the reversion (priced-in) case.", GroupName = G_NEWS, Order = 9)]
+		public bool NewsReversionFromNewsTime { get; set; }
 
 		// ── 6b · NEWS SURPRISE ────────────────────────────────────────────────────
 		// Decides WHICH price is fair after a release, from forecast vs actual.
@@ -377,8 +389,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			FairPriceSource           = FpSource.Close;
 			FairPriceReferenceMinutes = 1;
-			ZoneUnit                  = FpZoneUnit.Points;
-			ZoneDistance              = 20.0;
+			ZonePercent               = 0.1;
+			Band1Percent              = 0.3;
+			Band2Percent              = 0.6;
 
 			PivotLeftBars             = 3;
 			PivotRightBars            = 2;
@@ -399,11 +412,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 			MinBarsBeforeFirstTrade          = 3;
 			SameBarPriority                  = FpSameBarPriority.SlFirst;
 
-			UseExtendedTp            = false;
-			ExtendedTpTriggerPercent = 0.5;
-			ExtendedTpTradeCount     = 1;
-			ExtendedTpMode           = FpExtendedTpMode.FairPriceAlways;
-			ExtendedTpOffset         = 0.0;
+			UseFixedTpSl          = false;
+			FixedStopLossPoints   = 20.0;
+			FixedTakeProfitPoints = 40.0;
+
+			TrailMode             = FpTrailMode.Off;
 
 			RiskTargetUSD    = 100.0;
 			RiskToleranceUSD = 20.0;
@@ -419,6 +432,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			NewsCurrencyFilter    = "USD";
 			NewsMultipleEventRule = FpNewsMultipleEventRule.First;
 			NewsTradingStart      = FpNewsTradingStart.AfterSessionOpen;
+			NewsReversionFromNewsTime = false;
 
 			UseEmaFilter   = false;
 			UseEma1        = true;
