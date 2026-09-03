@@ -43,11 +43,24 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			int    dir   = brk.Direction;
 			double entry = Close[0];
-			double stop  = dir < 0
-				? Instrument.MasterInstrument.RoundToTickSize(High[0] + StopBufferTicks * _tickSize)
-				: Instrument.MasterInstrument.RoundToTickSize(Low[0]  - StopBufferTicks * _tickSize);
+
+			// Stop: a fixed number of points from the entry, or the displacement
+			// candle's extreme. Fixed TP/SL, when on, overrides the structure stop.
+			double stop = UseFixedTpSl
+				? (dir < 0
+					? Instrument.MasterInstrument.RoundToTickSize(entry + FixedStopLossPoints)
+					: Instrument.MasterInstrument.RoundToTickSize(entry - FixedStopLossPoints))
+				: (dir < 0
+					? Instrument.MasterInstrument.RoundToTickSize(High[0] + StopBufferTicks * _tickSize)
+					: Instrument.MasterInstrument.RoundToTickSize(Low[0]  - StopBufferTicks * _tickSize));
 
 			double risk = dir < 0 ? stop - entry : entry - stop;
+
+			// Which distance band the entry sits in. Fixed TP/SL bypasses the band
+			// system for both gating (no "too far" limit) and target selection.
+			FpSetupBand band = UseFixedTpSl
+				? FpSetupBand.Near
+				: SetupBands.Classify(entry, _fairPrice, _hasFair, ZonePercent, Band1Percent, Band2Percent);
 
 			SizingResult sizing = RiskSizer.Size(entry, stop, _pointValue,
 				RiskTargetUSD, RiskToleranceUSD, RiskHardCapUSD, MaxContracts);
@@ -59,6 +72,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				HasFairPrice = _hasFair,
 				WarmupDone   = _warmupDone,
 				InZone       = _insideZone,
+				DistanceOk   = band != FpSetupBand.Beyond,
 				NewsReady    = !_newsAwaiting,
 				SideOk       = SideAllowed(dir),
 				DailyLossOk  = !_dayLossHit && LossHeadroomFor(sizing.ResultingRisk),
@@ -81,7 +95,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				return;
 			}
 
-			SubmitEntry(dir, brk.Event, entry, stop, risk, sizing);
+			SubmitEntry(dir, brk.Event, entry, stop, risk, sizing, band);
 		}
 
 		/// <summary>
@@ -318,12 +332,33 @@ namespace NinjaTrader.NinjaScript.Strategies
 				Time[0].ToString("yyyy-MM-dd HH:mm:ss"), label, dir < 0 ? "bearish" : "bullish", extra));
 		}
 
-		private void SubmitEntry(int dir, FpBreakEvent evt, double entry, double stop, double risk, SizingResult sizing)
+		private void SubmitEntry(int dir, FpBreakEvent evt, double entry, double stop, double risk,
+		                         SizingResult sizing, FpSetupBand band)
 		{
-			ExtendedTpResult tpResult = _xtp.ComputeTakeProfit(dir, entry, risk, RewardRatio,
-				_fairPrice, _hasFair, _xtpOffset, _tickSize);
+			// Take-profit selection:
+			//   Fixed TP/SL on -> a fixed number of points from the entry.
+			//   FAR band       -> Fair Price itself (target the full reversion).
+			//   NEAR band      -> the Band 1 risk/reward multiple.
+			double rawTarget;
+			bool   targetIsFair;
 
-			double target = Instrument.MasterInstrument.RoundToTickSize(tpResult.TakeProfit);
+			if (UseFixedTpSl)
+			{
+				rawTarget    = dir < 0 ? entry - FixedTakeProfitPoints : entry + FixedTakeProfitPoints;
+				targetIsFair = false;
+			}
+			else if (band == FpSetupBand.Far)
+			{
+				rawTarget    = _fairPrice;
+				targetIsFair = true;
+			}
+			else
+			{
+				rawTarget    = dir < 0 ? entry - risk * RewardRatio : entry + risk * RewardRatio;
+				targetIsFair = false;
+			}
+
+			double target = Instrument.MasterInstrument.RoundToTickSize(rawTarget);
 
 			// After rounding the target must still sit at least one tick beyond the
 			// signal price, otherwise the bracket is nonsense.
@@ -344,11 +379,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 				Direction      = dir,
 				Event          = evt,
 				SignalPrice    = entry,
-				StopPrice      = stop,
-				TargetPrice    = target,
-				Quantity       = sizing.Quantity,
-				ExtendedTpUsed = tpResult.OverrideUsed,
-				EntryBarIndex  = CurrentBar,
+				StopPrice        = stop,
+				InitialStopPrice = stop,
+				TargetPrice       = target,
+				Quantity          = sizing.Quantity,
+				TargetIsFairPrice = targetIsFair,
+				Trail             = UseFixedTpSl ? FpTrailMode.Off : TrailMode,
+				MaxFavorablePoints = 0.0,
+				EntryBarIndex     = CurrentBar,
 				EntryBarTime   = Time[0],
 				SessionIndex   = _effSession,
 				Sizing         = sizing
@@ -363,9 +401,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 			else
 				EnterLong(sizing.Quantity, signal);
 
-			if (tpResult.OverrideUsed)
-				_xtp.Consume();
-
 			_trades[signal] = rec;
 			_openTrades.Add(rec);
 			_tradesDay++;
@@ -375,6 +410,91 @@ namespace NinjaTrader.NinjaScript.Strategies
 				Time[0].ToString("yyyy-MM-dd HH:mm:ss"),
 				rec.Describe(),
 				sizing.Describe(RiskTargetUSD, RiskToleranceUSD, RiskHardCapUSD)));
+		}
+
+		// ── Trailing stops ────────────────────────────────────────────────────────
+		//
+		// Runs once per bar for every filled, open band trade whose trail mode is not
+		// Off. The stop is only ever moved in the tightening direction — a level that
+		// would loosen it is ignored — so the trail can never increase risk. Fixed
+		// TP/SL trades carry Trail = Off and are never touched here.
+		private void UpdateTrailingStops()
+		{
+			for (int i = 0; i < _openTrades.Count; i++)
+			{
+				TradeRecord t = _openTrades[i];
+
+				if (t.Trail == FpTrailMode.Off || !t.IsFilled || t.IsClosed || double.IsNaN(t.FillPrice))
+					continue;
+
+				double newStop = t.Trail == FpTrailMode.RStep
+					? RStepTrailStop(t)
+					: StructureTrailStop(t);
+
+				if (double.IsNaN(newStop))
+					continue;
+
+				// Tighten only: a long's stop may only rise, a short's may only fall.
+				bool tighter = t.Direction > 0 ? newStop > t.StopPrice : newStop < t.StopPrice;
+				if (!tighter)
+					continue;
+
+				t.StopPrice = newStop;
+				SetStopLoss(t.SignalName, CalculationMode.Price, newStop, false);
+
+				if (VerboseLogging)
+					Print(string.Format(CultureInfo.InvariantCulture, "{0}  TRAIL {1} SL -> {2:0.#####} ({3})",
+						Time[0].ToString("yyyy-MM-dd HH:mm:ss"), t.SignalName, newStop, t.Trail));
+			}
+		}
+
+		/// <summary>
+		/// Whole-R ratchet. R is the entry-to-initial-stop distance. Once price has
+		/// reached +nR the stop sits at +(n-1)R from the entry — breakeven at n = 1.
+		/// Uses the best favourable excursion so far, so a pullback never loosens it.
+		/// </summary>
+		private double RStepTrailStop(TradeRecord t)
+		{
+			double r = Math.Abs(t.FillPrice - t.InitialStopPrice);
+			if (r <= 0.0)
+				return double.NaN;
+
+			double favor = t.Direction > 0 ? High[0] - t.FillPrice : t.FillPrice - Low[0];
+			if (favor > t.MaxFavorablePoints)
+				t.MaxFavorablePoints = favor;
+
+			int steps = (int)Math.Floor(t.MaxFavorablePoints / r);
+			if (steps < 1)
+				return double.NaN;
+
+			double stop = t.FillPrice + t.Direction * (steps - 1) * r;
+			return Instrument.MasterInstrument.RoundToTickSize(stop);
+		}
+
+		/// <summary>
+		/// Trails the latest CONFIRMED swing plus the SL buffer: the swing high for a
+		/// short, the swing low for a long. The tighten-only rule in the caller is what
+		/// turns "the latest swing" into "each lower high / higher low". A level that
+		/// would sit on the wrong side of the current close is refused.
+		/// </summary>
+		private double StructureTrailStop(TradeRecord t)
+		{
+			double buffer = StopBufferTicks * _tickSize;
+
+			if (t.Direction < 0)
+			{
+				if (double.IsNaN(_lastSwingHigh))
+					return double.NaN;
+
+				double stop = Instrument.MasterInstrument.RoundToTickSize(_lastSwingHigh + buffer);
+				return stop > Close[0] ? stop : double.NaN;
+			}
+
+			if (double.IsNaN(_lastSwingLow))
+				return double.NaN;
+
+			double stopLong = Instrument.MasterInstrument.RoundToTickSize(_lastSwingLow - buffer);
+			return stopLong < Close[0] ? stopLong : double.NaN;
 		}
 
 		// ── Open trade maintenance ────────────────────────────────────────────────

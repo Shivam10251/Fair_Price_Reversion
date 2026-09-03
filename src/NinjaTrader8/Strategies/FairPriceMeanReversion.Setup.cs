@@ -73,8 +73,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_tickSize   = Instrument.MasterInstrument.TickSize;
 			_pointValue = Instrument.MasterInstrument.PointValue;
 
-			_zoneOffset = ZoneUnit == FpZoneUnit.Ticks ? ZoneDistance     * _tickSize : ZoneDistance;
-			_xtpOffset  = ZoneUnit == FpZoneUnit.Ticks ? ExtendedTpOffset * _tickSize : ExtendedTpOffset;
+			// The three setup percentages must be strictly ordered so the zone and the
+			// two bands never overlap. Fixed TP/SL, when on, needs positive distances.
+			if (Band1Percent <= ZonePercent)
+				Fail("Band 1 % (" + Band1Percent + ") must be greater than the non-tradeable zone % (" + ZonePercent + ").");
+			else if (Band2Percent <= Band1Percent)
+				Fail("Band 2 % (" + Band2Percent + ") must be greater than Band 1 % (" + Band1Percent + ").");
+
+			if (UseFixedTpSl)
+			{
+				if (FixedStopLossPoints <= 0.0)
+					Fail("Fixed stop loss (points) must be greater than zero when Fixed TP/SL is on.");
+				else if (FixedTakeProfitPoints <= 0.0)
+					Fail("Fixed take profit (points) must be greater than zero when Fixed TP/SL is on.");
+			}
 
 			_sessionTz = TimeZoneRegistry.Resolve(SessionTimeZoneId);
 			if (_sessionTz == null)
@@ -137,7 +149,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			_structure = new StructureEngine(ActiveLevelMode);
 			_fair      = new FairPriceEngine();
-			_xtp       = new ExtendedTpEngine(UseExtendedTp, ExtendedTpTriggerPercent, ExtendedTpTradeCount, ExtendedTpMode);
 			_vwap      = new SessionVwap();
 
 			// Only construct what the filter will actually read — an unused EMA is pure

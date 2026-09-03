@@ -16,10 +16,17 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public FpBreakEvent Event;
 
 		public double   SignalPrice;          // displacement candle close
-		public double   StopPrice;
+		public double   StopPrice;            // current stop — moves as the trail tightens it
+		public double   InitialStopPrice;     // stop at entry, the reference for the R ratchet
 		public double   TargetPrice;
+
+		/// <summary>Trailing behaviour resolved for this trade at entry.</summary>
+		public FpTrailMode Trail;
+		/// <summary>Best favourable excursion in points since entry (for the R-step ratchet).</summary>
+		public double   MaxFavorablePoints;
 		public int      Quantity;
-		public bool     ExtendedTpUsed;
+		/// <summary>True when the take-profit is Fair Price itself (a Band 2 "far" setup).</summary>
+		public bool     TargetIsFairPrice;
 
 		public int      EntryBarIndex;
 		public DateTime EntryBarTime;
@@ -53,7 +60,13 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			if (remaining <= 0)
 				return 0.0;
 
-			return Math.Abs(FillPrice - StopPrice) * remaining * pointValue;
+			// Directional, and floored at zero: once the trail has moved the stop to
+			// breakeven or into profit there is no dollar loss left at risk.
+			double lossPoints = Direction > 0 ? FillPrice - StopPrice : StopPrice - FillPrice;
+			if (lossPoints <= 0.0)
+				return 0.0;
+
+			return lossPoints * remaining * pointValue;
 		}
 
 		/// <summary>True when a single bar contained both the stop and the target.</summary>
@@ -76,7 +89,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				SignalPrice,
 				StopPrice,
 				TargetPrice,
-				ExtendedTpUsed ? " | FP-target" : string.Empty);
+				TargetIsFairPrice ? " | FP-target" : string.Empty);
 		}
 	}
 }

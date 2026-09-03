@@ -26,6 +26,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public bool NewsReady;    // no news surprise is still waiting for its consolidation
 		public bool WarmupDone;
 		public bool InZone;
+		public bool DistanceOk;  // entry is not beyond Band 2 (too far from Fair Price)
 		public bool SideOk;
 		public bool DailyLossOk;   // realised loss for the day is inside the limit
 		public bool DailyProfitOk; // realised profit for the day is inside the limit
@@ -50,6 +51,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			if (!g.NewsReady)    return FpReject.NewsWait;
 			if (!g.WarmupDone)   return FpReject.Warmup;
 			if (g.InZone)        return FpReject.InZone;
+			if (!g.DistanceOk)   return FpReject.TooFar;
 			if (!g.SideOk)       return FpReject.Side;
 			if (!g.DailyLossOk)  return FpReject.DailyLoss;
 			if (!g.DailyProfitOk)return FpReject.DailyProfit;
@@ -77,6 +79,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				case FpReject.DailyProfit:  return "DAY PROFIT LIMIT";
 				case FpReject.Warmup:       return "WARMUP";
 				case FpReject.InZone:       return "IN ZONE";
+				case FpReject.TooFar:       return "TOO FAR";
 				case FpReject.Side:         return "SIDE";
 				case FpReject.DayCap:       return "DAY CAP";
 				case FpReject.SessionCap:   return "SESS CAP";
