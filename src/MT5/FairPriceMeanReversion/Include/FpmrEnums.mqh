@@ -62,6 +62,22 @@ enum FpSetupBand
    FP_BAND_BEYOND = 3
   };
 
+//--- What to do with a setup that lands in the FAR band ----------------------
+//  FairPrice : take it and target Fair Price itself - the full reversion. This
+//              is the original behaviour, and the reason the target can end up
+//              a very long way from the entry.
+//  NearExit  : take it, but exit it the way a NEAR setup exits - the fixed
+//              stop and target, or the Band 1 R:R multiple. The entry gating is
+//              unchanged; only the exit stops chasing Fair Price.
+//  Disabled  : do not trade past Band 1 at all. Everything beyond it is
+//              rejected as TOO FAR, exactly like a setup past Band 2.
+enum FpFarBandMode
+  {
+   FP_FAR_FAIR_PRICE = 0, // Fair Price target - revert the whole way (original)
+   FP_FAR_NEAR_EXIT  = 1, // Trade it, but exit like a NEAR setup
+   FP_FAR_DISABLED   = 2  // Do not trade past Band 1 at all
+  };
+
 //--- Trailing-stop behaviour for percentage-band setups (Near and Far) --------
 //  Off       : the stop stays where it was placed at entry.
 //  RStep     : whole-R ratchet - at +1R the stop moves to breakeven, at +2R to

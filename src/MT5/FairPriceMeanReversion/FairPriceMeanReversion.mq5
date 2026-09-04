@@ -50,6 +50,11 @@ input int      InpFairPriceReferenceMinutes = 1;            // Reference candle 
 input double   InpZonePercent               = 0.3;          // Non-tradeable zone (% of Fair Price) - nothing closer is traded
 input double   InpBand1Percent              = 0.5;          // Band 1 - outer edge of the NEAR band (fixed SL/TP region)
 input double   InpBand2Percent              = 0.8;          // Band 2 - outer edge of the FAR band (0 = no outer limit)
+// What happens to a setup that lands PAST Band 1 (the FAR band):
+//   Fair Price target - take it and revert the whole way to Fair Price (original)
+//   Exit like a NEAR setup - take it, but use the fixed SL/TP or the R:R multiple
+//   Do not trade      - refuse everything past Band 1, reported as TOO FAR
+input FpFarBandMode InpFarBandMode = FP_FAR_FAIR_PRICE; // FAR band behaviour (past Band 1)
 
 //--- 3 · MARKET STRUCTURE -----------------------------------------------------
 input group "3 · Market Structure"
@@ -220,6 +225,7 @@ int OnInit()
    cfg.zonePercent               = InpZonePercent;
    cfg.band1Percent              = InpBand1Percent;
    cfg.band2Percent              = InpBand2Percent;
+   cfg.farBandMode               = InpFarBandMode;
 
    cfg.pivotLeftBars     = InpPivotLeftBars;
    cfg.pivotRightBars    = InpPivotRightBars;

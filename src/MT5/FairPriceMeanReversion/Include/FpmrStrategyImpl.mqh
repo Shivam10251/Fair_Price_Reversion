@@ -318,7 +318,17 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
    FpSetupBand band=SetupBandsClassify(entry,m_fairPrice,m_hasFair,
                                        m_cfg.zonePercent,m_cfg.band1Percent,m_cfg.band2Percent);
 
-   bool useFixed=(band==FP_BAND_NEAR && m_cfg.useFixedNearBand);
+   // How the FAR band behaves is a user choice. "Near exit" makes a far setup
+   // exit like a near one, so the target stops chasing Fair Price; "Disabled"
+   // refuses the setup outright. The ORIGINAL band is kept for the rejection
+   // report, while exitBand is what actually picks the stop and target.
+   bool farDisabled=(band==FP_BAND_FAR && m_cfg.farBandMode==FP_FAR_DISABLED);
+
+   FpSetupBand exitBand=band;
+   if(band==FP_BAND_FAR && m_cfg.farBandMode==FP_FAR_NEAR_EXIT)
+      exitBand=FP_BAND_NEAR;
+
+   bool useFixed=(exitBand==FP_BAND_NEAR && m_cfg.useFixedNearBand);
 
    double stop;
    if(useFixed)
@@ -334,7 +344,7 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
    // reverse it becomes the STOP - and the stop is what the position is sized
    // on. Sizing before the bracket is settled would size the wrong distance.
    bool   targetIsFair=false;
-   double target=ComputeTarget(dir,entry,signalRisk,band,useFixed,targetIsFair);
+   double target=ComputeTarget(dir,entry,signalRisk,exitBand,useFixed,targetIsFair);
 
    //--- Resolve the bracket that will actually be PLACED ------------------
    int    execDir    = dir;
@@ -391,7 +401,7 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
    g.newsReady     = true;   // phase 6 supplies the waiting-for-consolidation flag
    g.warmupDone    = m_warmupDone;
    g.inZone        = m_insideZone;
-   g.distanceOk    = (band!=FP_BAND_BEYOND);
+   g.distanceOk    = (band!=FP_BAND_BEYOND && !farDisabled);
    g.sideOk        = SideAllowed(dir);
    g.dailyLossOk   = !m_trades.DayLossHit() && m_trades.LossHeadroomFor(sizing.resultingRisk);
    g.dailyProfitOk = !m_trades.DayProfitHit();
@@ -414,7 +424,7 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
       return;
      }
 
-   SubmitEntry(execDir,brk.event,entry,execStop,execTarget,sizing,band,useFixed,dir);
+   SubmitEntry(execDir,brk.event,entry,execStop,execTarget,sizing,exitBand,useFixed,dir);
   }
 
 //+------------------------------------------------------------------+

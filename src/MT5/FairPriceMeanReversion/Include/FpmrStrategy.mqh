@@ -65,6 +65,7 @@ struct FpmrConfig
    double            zonePercent;
    double            band1Percent;
    double            band2Percent;
+   FpFarBandMode     farBandMode;
 
    //--- 3 Market structure
    int               pivotLeftBars;
