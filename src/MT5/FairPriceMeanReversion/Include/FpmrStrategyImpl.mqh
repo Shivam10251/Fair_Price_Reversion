@@ -306,16 +306,14 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
    int    dir  =brk.direction;
    double entry=m_barClose;
 
-   // The band is decided FIRST, because it is what chooses the exits. An entry
-   // in the NEAR band takes the fixed stop and target; one in the FAR band
-   // keeps the displacement candle's stop and reverts all the way to Fair Price.
+   // The band is decided FIRST, because it chooses the exits: NEAR takes the
+   // fixed stop and target, FAR keeps the displacement stop and reverts to Fair
+   // Price. The FAR band's behaviour is itself a user choice - "Near exit"
+   // makes it exit like a near setup, "Disabled" refuses it - so the ORIGINAL
+   // band is kept for the rejection report while exitBand picks the bracket.
    FpSetupBand band=SetupBandsClassify(entry,m_fairPrice,m_hasFair,
                                        m_cfg.zonePercent,m_cfg.band1Percent,m_cfg.band2Percent);
 
-   // How the FAR band behaves is a user choice. "Near exit" makes a far setup
-   // exit like a near one, so the target stops chasing Fair Price; "Disabled"
-   // refuses the setup outright. The ORIGINAL band is kept for the rejection
-   // report, while exitBand is what actually picks the stop and target.
    bool farDisabled=(band==FP_BAND_FAR && m_cfg.farBandMode==FP_FAR_DISABLED);
 
    FpSetupBand exitBand=band;
