@@ -27,7 +27,7 @@ input group "1 · Sessions"
 input string InpSessionTimeZoneId  = "Asia/Kolkata"; // Session timezone (every window below is TYPED in this zone)
 input bool   InpAutoAdjustForUsDst = true;           // Times are SUMMER (auto-adjust for winter)
 input bool   InpSession1Enabled    = true;           // Session 1 enabled
-input string InpSession1Window     = "1900-1930";    // Session 1 window (HHMM-HHMM, end exclusive)
+input string InpSession1Window     = "1900-2030";    // Session 1 window (HHMM-HHMM, end exclusive)
 input bool   InpSession2Enabled    = false;          // Session 2 enabled
 input string InpSession2Window     = "2000-2100";    // Session 2 window
 input bool   InpSession3Enabled    = false;          // Session 3 enabled
@@ -47,9 +47,9 @@ input FpServerDst InpServerDst            = FP_SRVDST_US; // Which DST calendar 
 input group "2 · Fair Price"
 input FpSource InpFairPriceSource           = FP_SRC_CLOSE; // Fair Price source (first reference candle)
 input int      InpFairPriceReferenceMinutes = 1;            // Reference candle minutes (1,2,3,4,5,6,10,12,15,20,30)
-input double   InpZonePercent               = 0.1;          // Non-tradeable zone (% of Fair Price)
-input double   InpBand1Percent              = 0.3;          // Band 1 - near edge (% of Fair Price)
-input double   InpBand2Percent              = 0.6;          // Band 2 - far edge (% of Fair Price)
+input double   InpZonePercent               = 0.3;          // Non-tradeable zone (% of Fair Price) - nothing closer is traded
+input double   InpBand1Percent              = 0.5;          // Band 1 - outer edge of the NEAR band (fixed SL/TP region)
+input double   InpBand2Percent              = 0.0;          // Band 2 - outer edge of the FAR band (0 = no outer limit)
 
 //--- 3 · MARKET STRUCTURE -----------------------------------------------------
 input group "3 · Market Structure"
@@ -74,14 +74,16 @@ input bool   InpCloseAtSessionEnd                = false; // Close trades at ses
 input int    InpMinBarsBeforeFirstTrade          = 3;     // Min bars before first trade (warm-up)
 input FpSameBarPriority InpSameBarPriority       = FP_SAMEBAR_SL_FIRST; // Same-candle TP/SL report (reporting only)
 
-//--- 4c · FIXED TP/SL ---------------------------------------------------------
-// A master override for exits. When on, both the stop and the target are a fixed
-// number of POINTS from the entry, replacing the structure stop and the
-// distance-band targets for every trade. Entry gating is unchanged.
-input group "4c · Fixed TP/SL"
-input bool   InpUseFixedTpSl          = false; // Use fixed TP/SL (points) - master override
-input double InpFixedStopLossPoints   = 20.0;  // Fixed stop loss (points)
-input double InpFixedTakeProfitPoints = 40.0;  // Fixed take profit (points)
+//--- 4c · FIXED TP/SL FOR THE NEAR BAND ---------------------------------------
+// Applies to NEAR-band setups only - entries between the non-tradeable zone edge
+// and Band 1. Those take a fixed stop and a fixed target in price points instead
+// of the displacement-candle stop and the Band 1 risk/reward multiple.
+// FAR-band setups (past Band 1) are untouched: they keep the displacement
+// candle's stop and target Fair Price itself.
+input group "4c · Fixed TP/SL (near band)"
+input bool   InpUseFixedNearBand      = true;  // Near band uses fixed SL/TP instead of the R:R multiple
+input double InpFixedStopLossPoints   = 40.0;  // Fixed stop loss (price points, e.g. 40 = 40 NAS100 index points)
+input double InpFixedTakeProfitPoints = 60.0;  // Fixed take profit (price points)
 
 //--- 4d · TRAILING STOP -------------------------------------------------------
 input group "4d · Trailing Stop"
@@ -89,9 +91,9 @@ input FpTrailMode InpTrailMode = FP_TRAIL_OFF; // Trailing stop mode (ignored un
 
 //--- 5 · RISK SIZING ----------------------------------------------------------
 input group "5 · Risk Sizing"
-input double InpRiskTargetUSD    = 100.0; // Risk target (account currency)
-input double InpRiskToleranceUSD = 20.0;  // Risk tolerance (reporting band only)
-input double InpRiskHardCapUSD   = 150.0; // Risk hard cap (never exceeded)
+input double InpRiskTargetUSD    = 900.0;  // Risk target (account currency)
+input double InpRiskToleranceUSD = 180.0; // Risk tolerance (reporting band only)
+input double InpRiskHardCapUSD   = 1350.0;// Risk hard cap (never exceeded)
 input double InpMaxLots          = 10.0;  // Max lots (0 = only the broker's own ceiling)
 
 //--- 5b · DAILY LIMITS --------------------------------------------------------
@@ -207,7 +209,7 @@ int OnInit()
    cfg.closeAtSessionEnd                = InpCloseAtSessionEnd;
    cfg.minBarsBeforeFirstTrade          = InpMinBarsBeforeFirstTrade;
 
-   cfg.useFixedTpSl          = InpUseFixedTpSl;
+   cfg.useFixedNearBand      = InpUseFixedNearBand;
    cfg.fixedStopLossPoints   = InpFixedStopLossPoints;
    cfg.fixedTakeProfitPoints = InpFixedTakeProfitPoints;
 

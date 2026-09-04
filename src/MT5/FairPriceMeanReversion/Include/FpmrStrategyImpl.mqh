@@ -296,10 +296,16 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
    int    dir  =brk.direction;
    double entry=m_barClose;
 
-   // Stop: a fixed number of points from the entry, or the displacement
-   // candle's extreme. Fixed TP/SL, when on, overrides the structure stop.
+   // The band is decided FIRST, because it is what chooses the exits. An entry
+   // in the NEAR band takes the fixed stop and target; one in the FAR band
+   // keeps the displacement candle's stop and reverts all the way to Fair Price.
+   FpSetupBand band=SetupBandsClassify(entry,m_fairPrice,m_hasFair,
+                                       m_cfg.zonePercent,m_cfg.band1Percent,m_cfg.band2Percent);
+
+   bool useFixed=(band==FP_BAND_NEAR && m_cfg.useFixedNearBand);
+
    double stop;
-   if(m_cfg.useFixedTpSl)
+   if(useFixed)
       stop=FpRoundToTick(dir<0 ? entry+m_cfg.fixedStopLossPoints
                                : entry-m_cfg.fixedStopLossPoints, m_sym);
    else
@@ -307,13 +313,6 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
                                : m_barLow -m_cfg.stopBufferTicks*m_sym.tickSize, m_sym);
 
    double risk=(dir<0 ? stop-entry : entry-stop);
-
-   // Which distance band the entry sits in. Fixed TP/SL bypasses the band
-   // system for both gating (no "too far" limit) and target selection.
-   FpSetupBand band=m_cfg.useFixedTpSl
-                    ? FP_BAND_NEAR
-                    : SetupBandsClassify(entry,m_fairPrice,m_hasFair,
-                                         m_cfg.zonePercent,m_cfg.band1Percent,m_cfg.band2Percent);
 
    SizingResult sizing;
    RiskSizerSize(entry,stop,m_sym.moneyPerPricePerLot,
@@ -355,7 +354,7 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
       return;
      }
 
-   SubmitEntry(dir,brk.event,entry,stop,risk,sizing,band);
+   SubmitEntry(dir,brk.event,entry,stop,risk,sizing,band,useFixed);
   }
 
 //+------------------------------------------------------------------+
@@ -363,16 +362,16 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
 //+------------------------------------------------------------------+
 void CFpmrStrategy::SubmitEntry(const int dir,const FpBreakEvent evt,const double entry,
                                 const double stop,const double risk,const SizingResult &sizing,
-                                const FpSetupBand band)
+                                const FpSetupBand band,const bool useFixed)
   {
-   // Take-profit selection:
-   //   Fixed TP/SL on -> a fixed number of points from the entry.
-   //   FAR band       -> Fair Price itself (target the full reversion).
-   //   NEAR band      -> the Band 1 risk/reward multiple.
+   // Take-profit selection, decided by the band the entry landed in:
+   //   NEAR + fixed on -> a fixed number of points from the entry.
+   //   FAR             -> Fair Price itself (target the full reversion).
+   //   NEAR, fixed off -> the Band 1 risk/reward multiple.
    double rawTarget;
    bool   targetIsFair;
 
-   if(m_cfg.useFixedTpSl)
+   if(useFixed)
      {
       rawTarget   =(dir<0 ? entry-m_cfg.fixedTakeProfitPoints : entry+m_cfg.fixedTakeProfitPoints);
       targetIsFair=false;
@@ -399,7 +398,8 @@ void CFpmrStrategy::SubmitEntry(const int dir,const FpBreakEvent evt,const doubl
       return;
      }
 
-   FpTrailMode trail=(m_cfg.useFixedTpSl ? FP_TRAIL_OFF : m_cfg.trailMode);
+   // A fixed-bracket trade is left alone; only the structure-stopped FAR trades trail.
+   FpTrailMode trail=(useFixed ? FP_TRAIL_OFF : m_cfg.trailMode);
 
    string error="";
    if(!m_trades.Submit(dir,evt,entry,stop,target,targetIsFair,trail,sizing,
@@ -424,7 +424,7 @@ void CFpmrStrategy::SubmitEntry(const int dir,const FpBreakEvent evt,const doubl
                       DoubleToString(entry,m_sym.digits),
                       DoubleToString(stop,m_sym.digits),
                       DoubleToString(target,m_sym.digits),
-                      targetIsFair ? " | FP-target" : "",
+                      targetIsFair ? " | FP-target" : (useFixed ? " | fixed" : ""),
                       SizingDescribe(sizing,m_cfg.riskTargetUsd,m_cfg.riskToleranceUsd,
                                      m_cfg.riskHardCapUsd,m_sym.lotStep)));
   }

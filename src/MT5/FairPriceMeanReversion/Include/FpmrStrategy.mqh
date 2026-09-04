@@ -85,8 +85,8 @@ struct FpmrConfig
    bool              closeAtSessionEnd;
    int               minBarsBeforeFirstTrade;
 
-   //--- 4c Fixed TP/SL
-   bool              useFixedTpSl;
+   //--- 4c Fixed TP/SL for the NEAR band
+   bool              useFixedNearBand;
    double            fixedStopLossPoints;
    double            fixedTakeProfitPoints;
 
@@ -219,16 +219,16 @@ public:
       if(cfg.band1Percent<=cfg.zonePercent)
          Fail(StringFormat("Band 1 %% (%.4f) must be greater than the non-tradeable zone %% (%.4f).",
                            cfg.band1Percent,cfg.zonePercent));
-      else if(cfg.band2Percent<=cfg.band1Percent)
-         Fail(StringFormat("Band 2 %% (%.4f) must be greater than Band 1 %% (%.4f).",
-                           cfg.band2Percent,cfg.band1Percent));
+      else if(cfg.band2Percent>0.0 && cfg.band2Percent<=cfg.band1Percent)
+         Fail(StringFormat("Band 2 %% (%.4f) must be greater than Band 1 %% (%.4f), or zero to disable "
+                           "the outer limit entirely.",cfg.band2Percent,cfg.band1Percent));
 
-      if(cfg.useFixedTpSl)
+      if(cfg.useFixedNearBand)
         {
          if(cfg.fixedStopLossPoints<=0.0)
-            Fail("Fixed stop loss (points) must be greater than zero when Fixed TP/SL is on.");
+            Fail("Fixed stop loss (points) must be greater than zero when the near band uses fixed TP/SL.");
          else if(cfg.fixedTakeProfitPoints<=0.0)
-            Fail("Fixed take profit (points) must be greater than zero when Fixed TP/SL is on.");
+            Fail("Fixed take profit (points) must be greater than zero when the near band uses fixed TP/SL.");
         }
 
       m_typedTz=FpTzResolve(cfg.sessionTimeZoneId);
@@ -397,7 +397,7 @@ private:
    void              RecordRejection(const int dir,const FpReject reason,const SizingResult &sizing);
    void              SubmitEntry(const int dir,const FpBreakEvent evt,const double entry,
                                  const double stop,const double risk,const SizingResult &sizing,
-                                 const FpSetupBand band);
+                                 const FpSetupBand band,const bool useFixed);
 
 public:
    string            LastRejectText(void) const { return(m_lastRejectText); }
