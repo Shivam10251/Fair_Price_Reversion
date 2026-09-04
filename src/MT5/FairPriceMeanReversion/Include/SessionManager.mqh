@@ -72,6 +72,14 @@ public:
       return(m_windows[sessionIndex-1].PreviousOpen(tzFrom));
      }
 
+   //--- Close instant of a session, given the open the evaluator reported.
+   datetime          CloseOfSession(const int sessionIndex,const datetime openTz)
+     {
+      if(sessionIndex<1 || sessionIndex>3)
+         return(openTz);
+      return(openTz+m_windows[sessionIndex-1].DurationMinutes()*60);
+     }
+
    //--- Any window that failed to parse, so the EA can refuse to run.
    string            FirstConfigError(void)
      {

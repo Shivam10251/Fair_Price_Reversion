@@ -121,6 +121,21 @@ input group "8 · Execution"
 input ulong InpMagicNumber    = 8451207; // Magic number (identifies this EA's positions)
 input ulong InpSlippagePoints = 10;      // Maximum slippage (points)
 
+//--- 11 · CHART DISPLAY -------------------------------------------------------
+// Drawn behind the candles, which is how MT5 gives a filled rectangle the
+// "transparent" look - chart objects have no alpha channel, so a box in front
+// would hide the price action it is describing.
+// A NON-VISUAL backtest draws nothing: nobody can see it and the objects would
+// only slow the run down. Use the tester's Visual mode, or a live chart, to see
+// any of this.
+input group "11 · Chart display"
+input bool  InpShowChartObjects  = true;         // Draw session boxes, Fair Price and trade zones
+input color InpSessionBoxColor   = clrGainsboro; // Session box (open to close)
+input color InpFairPriceColor    = clrDarkOrange;// Fair Price line
+input color InpStopZoneColor     = clrLightPink; // Stop loss zone
+input color InpTargetZoneColor   = clrPaleGreen; // Take profit zone
+input bool  InpKeepObjectsOnExit = false;        // Keep the drawings after the EA is removed
+
 //--- 10 · DEBUG ---------------------------------------------------------------
 input group "10 · Debug"
 input bool InpVerboseLogging = false; // Verbose logging (every entry, skip and trail move)
@@ -228,6 +243,13 @@ int OnInit()
    cfg.useVwapFilter = InpUseVwapFilter;
    cfg.volumeMode    = InpVolumeMode;
 
+   cfg.paint.enabled    = InpShowChartObjects;
+   cfg.paint.sessionBox = InpSessionBoxColor;
+   cfg.paint.fairPrice  = InpFairPriceColor;
+   cfg.paint.stopZone   = InpStopZoneColor;
+   cfg.paint.targetZone = InpTargetZoneColor;
+   cfg.paint.keepOnExit = InpKeepObjectsOnExit;
+
    cfg.verboseLogging = InpVerboseLogging;
 
    if(!g_strategy.Init(cfg,g_symbol,GetPointer(g_trades)))
@@ -249,8 +271,11 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-   if(g_ready)
-      Print(g_trades.RunSummary());
+   if(!g_ready)
+      return;
+
+   Print(g_trades.RunSummary());
+   g_strategy.OnDeinitEvent();
   }
 
 //+------------------------------------------------------------------+

@@ -408,6 +408,14 @@ public:
       return(FpTzFromUtc(z,ToUtc(serverTime)));
      }
 
+   //--- The inverse. Chart objects are positioned in SERVER time, because that is
+   //    what MT5 stamps bars with, but the strategy reasons in the session zone -
+   //    so a session's open and close have to come back the other way.
+   datetime          FromZone(const datetime zoneTime,const FpTzId z) const
+     {
+      return(FromUtc(FpTzToUtc(z,zoneTime)));
+     }
+
    //--- Offset from UTC right now, for the configuration log.
    string            Describe(void) const
      {

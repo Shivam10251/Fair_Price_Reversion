@@ -38,6 +38,7 @@
 #include "RiskSizer.mqh"
 #include "RejectionReporter.mqh"
 #include "TradeManager.mqh"
+#include "ChartPainter.mqh"
 
 //--- Which volume series feeds the session VWAP -------------------------------
 enum FpVolumeMode
@@ -106,6 +107,9 @@ struct FpmrConfig
    bool              useVwapFilter;
    FpVolumeMode      volumeMode;
 
+   //--- 11 Chart display
+   FpPaintConfig     paint;
+
    //--- 10 Debug
    bool              verboseLogging;
   };
@@ -123,6 +127,7 @@ private:
    CStructureEngine  m_structure;
    CFairPriceEngine  m_fair;
    CSessionVwap      m_vwap;
+   CChartPainter     m_painter;
    CTradeManager    *m_trades;
 
    int               m_emaFastHandle;
@@ -148,6 +153,11 @@ private:
 
    double            m_lastSwingHigh;
    double            m_lastSwingLow;
+
+   //--- The first session of a run reports where it lands on the CHART clock.
+   //    Chart objects are anchored in server time, so this is both a sanity
+   //    check on the conversion and the answer to "when do I look?".
+   bool              m_saidChartWindow;
 
    //--- Cached per-bar values
    double            m_fairPrice, m_zoneUpper, m_zoneLower;
@@ -191,13 +201,16 @@ public:
        m_configError(false), m_configErrorText(""), m_lastBarTime(0), m_fpCursorTime(0),
        m_prevRefSource(FPMR_NA), m_prevEffSession(0), m_tradingStartBar(-1),
        m_hadFairPrev(false), m_tradesDay(0), m_tradesSession(0), m_lastRejectText("-"),
-       m_lastSwingHigh(FPMR_NA), m_lastSwingLow(FPMR_NA), m_barIndex(-1) {}
+       m_lastSwingHigh(FPMR_NA), m_lastSwingLow(FPMR_NA), m_barIndex(-1),
+       m_saidChartWindow(false) {}
 
                     ~CFpmrStrategy(void)
      {
       if(m_emaFastHandle!=INVALID_HANDLE) IndicatorRelease(m_emaFastHandle);
       if(m_emaSlowHandle!=INVALID_HANDLE) IndicatorRelease(m_emaSlowHandle);
      }
+
+   void              OnDeinitEvent(void) { m_painter.OnDeinit(); }
 
    bool              ConfigError(void)     const { return(m_configError); }
    string            ConfigErrorText(void) const { return(m_configErrorText); }
@@ -281,6 +294,8 @@ public:
       if(m_trades!=NULL)
          m_trades.SetDayClock(cfg.serverGmtOffsetHours,cfg.serverDst,m_sessionTz);
 
+      m_painter.Init(cfg.paint,sym.digits);
+
       m_structure.Init(cfg.activeLevelMode);
       m_fair.Init(true);   // news Fair Price expiry - inert until phase 6
       m_vwap.Reset();
@@ -311,6 +326,7 @@ public:
       m_lastSwingLow    = FPMR_NA;
       m_lastRejectText  = "-";
       m_barIndex        = -1;
+      m_saidChartWindow = false;
 
       Print(StringFormat("FPMR loaded: %s | session tz %s (windows evaluated there) | typed in %s | "
                          "server clock %s | reference candle %d min | chart %s%s",
@@ -394,6 +410,7 @@ private:
    bool              EmaOk(const bool isLong);
    bool              VwapOkLong(void);
    bool              VwapOkShort(void);
+   void              PaintChart(const SessionEvaluation &ev,const bool isSessionStart);
    void              RecordRejection(const int dir,const FpReject reason,const SizingResult &sizing);
    void              SubmitEntry(const int dir,const FpBreakEvent evt,const double entry,
                                  const double stop,const double risk,const SizingResult &sizing,
@@ -411,6 +428,7 @@ public:
 //--- The per-bar bodies live in their own file purely to keep both under the
 //    500-line ceiling this repository works to.
 #include "FpmrStrategyImpl.mqh"
+#include "FpmrStrategyFilters.mqh"
 
 #endif // FPMR_STRATEGY_MQH
 //+------------------------------------------------------------------+

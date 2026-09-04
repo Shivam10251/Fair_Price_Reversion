@@ -107,6 +107,20 @@ void CFpmrStrategy::OnClosedBar(void)
    m_trades.RefreshReconciliation();
    m_trades.ScanAmbiguity(m_barHigh,m_barLow);
 
+   if(sessionStart && !m_saidChartWindow && ev.sessionOpenTz>0)
+     {
+      m_saidChartWindow=true;
+      datetime closeTz=m_sessions.CloseOfSession(m_effSession,ev.sessionOpenTz);
+      Print(StringFormat("FPMR chart window: session %d runs %s - %s in the session zone, "
+                         "which is %s - %s in BROKER SERVER time. That is where the boxes are "
+                         "drawn and where you will see the trades on the chart.",
+                         m_effSession,
+                         TimeToString(ev.sessionOpenTz,TIME_MINUTES),
+                         TimeToString(closeTz,TIME_MINUTES),
+                         TimeToString(m_clock.FromZone(ev.sessionOpenTz,m_sessionTz),TIME_MINUTES),
+                         TimeToString(m_clock.FromZone(closeTz,m_sessionTz),TIME_MINUTES)));
+     }
+
    if(sessionStart)
      {
       m_tradesSession   = 0;
@@ -152,6 +166,41 @@ void CFpmrStrategy::OnClosedBar(void)
       m_trades.CloseAllOpen("session end");
 
    m_trades.ApplyDailyLimitFlatten();
+
+   PaintChart(ev,sessionStart);
+  }
+
+//+------------------------------------------------------------------+
+//| Chart drawing                                                    |
+//|                                                                  |
+//| Runs last, so the boxes reflect the state the bar ended in. Every |
+//| time value is converted back to SERVER time first, because that   |
+//| is the clock MT5 anchors chart objects to.                       |
+//+------------------------------------------------------------------+
+void CFpmrStrategy::PaintChart(const SessionEvaluation &ev,const bool isSessionStart)
+  {
+   if(!m_painter.Active())
+      return;
+
+   if(m_effSession!=0 && ev.sessionOpenTz>0)
+     {
+      datetime closeTz     = m_sessions.CloseOfSession(m_effSession,ev.sessionOpenTz);
+      datetime openServer  = m_clock.FromZone(ev.sessionOpenTz,m_sessionTz);
+      datetime closeServer = m_clock.FromZone(closeTz,m_sessionTz);
+
+      m_painter.SessionBar(m_effSession,openServer,closeServer,m_barHigh,m_barLow,isSessionStart);
+      m_painter.FairPriceBar(m_fairPrice,m_hasFair);
+     }
+
+   int n=m_trades.RecordCount();
+   for(int i=0;i<n;i++)
+     {
+      TradeRecord t;
+      m_trades.GetRecord(i,t);
+      m_painter.TradeZones(t,m_barOpenTime+m_primarySeconds);
+     }
+
+   m_painter.Flush();
   }
 
 //+------------------------------------------------------------------+
@@ -427,71 +476,6 @@ void CFpmrStrategy::SubmitEntry(const int dir,const FpBreakEvent evt,const doubl
                       targetIsFair ? " | FP-target" : (useFixed ? " | fixed" : ""),
                       SizingDescribe(sizing,m_cfg.riskTargetUsd,m_cfg.riskToleranceUsd,
                                      m_cfg.riskHardCapUsd,m_sym.lotStep)));
-  }
-
-//+------------------------------------------------------------------+
-//| Filters and diagnostics                                          |
-//+------------------------------------------------------------------+
-
-//--- EMA gate. Each leg is independent:
-//      both legs on  -> crossover rule, long needs EMA1 above EMA2;
-//      one leg on    -> price-vs-EMA rule, long needs the close above that EMA;
-//      no leg on     -> no constraint, same as the master switch being off.
-//    A disabled leg has an invalid handle, so the shape of the test follows what
-//    was built. A handle that cannot be read yet passes rather than blocks, the
-//    same way an unfilled NinjaTrader indicator series would have.
-bool CFpmrStrategy::EmaOk(const bool isLong)
-  {
-   if(!m_cfg.useEmaFilter)
-      return(true);
-
-   bool one=(m_emaFastHandle!=INVALID_HANDLE);
-   bool two=(m_emaSlowHandle!=INVALID_HANDLE);
-
-   double f[1], s[1];
-
-   if(one && CopyBuffer(m_emaFastHandle,0,1,1,f)<1) return(true);
-   if(two && CopyBuffer(m_emaSlowHandle,0,1,1,s)<1) return(true);
-
-   if(one && two)
-      return(isLong ? f[0]>s[0] : f[0]<s[0]);
-
-   if(one)
-      return(isLong ? m_barClose>f[0] : m_barClose<f[0]);
-
-   if(two)
-      return(isLong ? m_barClose>s[0] : m_barClose<s[0]);
-
-   return(true);
-  }
-
-bool CFpmrStrategy::VwapOkLong(void)
-  {
-   return(!m_cfg.useVwapFilter || !m_vwap.HasValue() || m_barClose>m_vwap.Value());
-  }
-
-bool CFpmrStrategy::VwapOkShort(void)
-  {
-   return(!m_cfg.useVwapFilter || !m_vwap.HasValue() || m_barClose<m_vwap.Value());
-  }
-
-void CFpmrStrategy::RecordRejection(const int dir,const FpReject reason,const SizingResult &sizing)
-  {
-   m_lastRejectText=RejectionLabel(reason);
-
-   if(!m_cfg.verboseLogging)
-      return;
-
-   string extra="";
-   if(reason==FP_REJ_RISK_CAP || reason==FP_REJ_RISK)
-      extra="  "+SizingDescribe(sizing,m_cfg.riskTargetUsd,m_cfg.riskToleranceUsd,
-                                m_cfg.riskHardCapUsd,m_sym.lotStep);
-
-   Print(StringFormat("%s  REJECT %s (%s displacement)%s",
-                      TimeToString(m_barOpenTime,TIME_DATE|TIME_SECONDS),
-                      m_lastRejectText,
-                      dir<0 ? "bearish" : "bullish",
-                      extra));
   }
 
 #endif // FPMR_STRATEGY_IMPL_MQH

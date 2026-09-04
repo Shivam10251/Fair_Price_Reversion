@@ -154,6 +154,16 @@ public:
    bool              DayProfitHit(void)   const { return(m_dayProfitHit); }
    string            LastExitText(void)   const { return(m_lastExitText); }
 
+   //--- Read-only access for the chart painter. Trades stay owned here; the
+   //    painter only ever reads a copy.
+   int               RecordCount(void) const { return(ArraySize(m_records)); }
+
+   void              GetRecord(const int i,TradeRecord &out) const
+     {
+      if(i>=0 && i<ArraySize(m_records))
+         out=m_records[i];
+     }
+
    int               OpenCount(void) const
      {
       int n=0;

@@ -62,6 +62,15 @@ public:
 
    bool              IsActive(void)    const { return(m_enabled && m_isValid); }
 
+   //--- Length of the window in minutes. A window that wraps midnight, and one
+   //    typed with an end equal to its start, both mean "through to that time
+   //    tomorrow" rather than zero.
+   int               DurationMinutes(void) const
+     {
+      int d=(m_endMinute-m_startMinute+1440)%1440;
+      return(d==0 ? 1440 : d);
+     }
+
    //--- Membership test for a bar OPEN timestamp already converted to the session zone.
    bool              Contains(const datetime tzBarOpen) const
      {
