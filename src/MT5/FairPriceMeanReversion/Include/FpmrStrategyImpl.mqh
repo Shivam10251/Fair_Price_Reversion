@@ -191,12 +191,9 @@ void CFpmrStrategy::ResolveTradingWindow(const SessionEvaluation &ev)
   }
 
 //+------------------------------------------------------------------+
-//| Advances the Fair Price engine over every reference bar that has  |
-//| closed at or before this primary bar.                            |
-//|                                                                  |
-//| Driven from the primary bar rather than from a second timeframe's |
-//| own event, so the result never depends on which series the        |
-//| terminal happens to update first.                                 |
+//| Advances the Fair Price engine over every reference bar closed at |
+//| or before this primary bar. Driven from the primary bar, so the   |
+//| result never depends on series update order.                      |
 //+------------------------------------------------------------------+
 void CFpmrStrategy::PumpFairPriceSeries(const datetime primaryCloseTime)
   {
@@ -400,7 +397,14 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
    g.inZone        = m_insideZone;
    g.distanceOk    = (band!=FP_BAND_BEYOND && !farDisabled);
    g.sideOk        = SideAllowed(dir);
-   g.dailyLossOk   = !m_trades.DayLossHit() && m_trades.LossHeadroomFor(sizing.resultingRisk);
+   // The daily-loss projection needs what this trade can ACTUALLY lose. Under
+   // SWAP_KEEPSIZE the position is sized on the signal's stop but carries the
+   // far wider swapped one, so sizing.resultingRisk understates the exposure
+   // and the gate would wave through trades that blow past the daily limit.
+   // Every other mode has the two equal, so this is a no-op there.
+   double trueRiskUsd=execRisk*sizing.lots*m_sym.moneyPerPricePerLot;
+
+   g.dailyLossOk   = !m_trades.DayLossHit() && m_trades.LossHeadroomFor(trueRiskUsd);
    g.dailyProfitOk = !m_trades.DayProfitHit();
    g.dayCapOk      = (m_cfg.maxTradesPerDay==0     || m_tradesDay<m_cfg.maxTradesPerDay);
    g.sessionCapOk  = (m_cfg.maxTradesPerSession==0 || m_tradesSession<m_cfg.maxTradesPerSession);
