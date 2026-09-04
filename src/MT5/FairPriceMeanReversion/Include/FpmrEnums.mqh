@@ -84,12 +84,21 @@ enum FpTrailMode
 //  Swap   : opposite side with the stop and target LEVELS exchanged. This is
 //           the true P&L inverse: the reversed trade loses exactly when the
 //           original would have won, so the two win rates sum to 100%. Note
-//           the risk distance changes, so the position is re-sized on it.
+//           the risk distance changes, so the position is re-sized on it -
+//           which means the MONEY does not mirror, only the outcomes.
+//  SwapKeepSize : as Swap, but the position keeps the size the ORIGINAL setup
+//           would have taken, so the P&L mirrors in dollars too. This is the
+//           only mode that reproduces the inverse equity curve, and it does so
+//           by DELIBERATELY BREACHING the risk cap: the stop is now the old
+//           target distance while the lots were sized for the old stop, so the
+//           money at risk per trade is multiplied by target/stop. Diagnostic
+//           tool, not a risk policy.
 enum FpReverseMode
   {
    FP_REVERSE_OFF    = 0, // Off - trade the setup as signalled
    FP_REVERSE_MIRROR = 1, // Mirror bracket - opposite side, same SL and TP distances
-   FP_REVERSE_SWAP   = 2  // Swap bracket - opposite side, SL and TP exchanged (true inverse)
+   FP_REVERSE_SWAP   = 2, // Swap bracket - opposite side, SL and TP exchanged (true inverse)
+   FP_REVERSE_SWAP_KEEPSIZE = 3 // Swap bracket, ORIGINAL size - true P&L mirror, IGNORES the risk cap
   };
 
 //--- Impact rating as parsed from the calendar file ---------------------------

@@ -297,6 +297,12 @@ public:
       if(m_trades!=NULL)
          m_trades.SetDayClock(cfg.serverGmtOffsetHours,cfg.serverDst,m_sessionTz);
 
+      if(cfg.reverseMode==FP_REVERSE_SWAP_KEEPSIZE)
+         Print("FPMR WARNING: reverse mode is 'Swap bracket, ORIGINAL size'. Positions are sized for the "
+               "signal's stop but carry the far wider swapped stop, so the money at risk per trade EXCEEDS "
+               "the risk target and the hard cap by the target/stop ratio. This mode exists to reproduce the "
+               "inverse equity curve for analysis - it is not a risk policy. Every entry logs its TRUE RISK.");
+
       m_painter.Init(cfg.paint,sym.digits);
 
       m_structure.Init(cfg.activeLevelMode);

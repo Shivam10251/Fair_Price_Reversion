@@ -349,7 +349,7 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
       execTarget = FpRoundToTick(2.0*entry-target,m_sym);
       targetIsFair=false;   // the mirror of Fair Price is not Fair Price
      }
-   else if(m_cfg.reverseMode==FP_REVERSE_SWAP)
+   else if(m_cfg.reverseMode==FP_REVERSE_SWAP || m_cfg.reverseMode==FP_REVERSE_SWAP_KEEPSIZE)
      {
       // The true inverse: the original target becomes the stop and vice versa,
       // so this trade loses exactly when the original would have won.
@@ -365,8 +365,15 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
    // multiply the money at risk.
    double execRisk=MathAbs(entry-execStop);
 
+   // SWAP_KEEPSIZE sizes on the SIGNAL's stop rather than the one being placed,
+   // so the position is identical to what the un-reversed setup would have
+   // taken and the P&L mirrors in dollars. The money actually at risk is then
+   // execRisk/signalRisk times the target - the cap is knowingly breached, and
+   // the entry log states the real figure.
+   double sizingStop=(m_cfg.reverseMode==FP_REVERSE_SWAP_KEEPSIZE ? stop : execStop);
+
    SizingResult sizing;
-   RiskSizerSize(entry,execStop,m_sym.moneyPerPricePerLot,
+   RiskSizerSize(entry,sizingStop,m_sym.moneyPerPricePerLot,
                  m_cfg.riskTargetUsd,m_cfg.riskToleranceUsd,m_cfg.riskHardCapUsd,
                  m_sym.lotMin,m_sym.lotMax,m_sym.lotStep,m_cfg.maxLots,
                  sizing);
@@ -454,7 +461,13 @@ void CFpmrStrategy::SubmitEntry(const int dir,const FpBreakEvent evt,const doubl
    m_tradesSession++;
 
    string tag="";
-   if(m_cfg.reverseMode==FP_REVERSE_MIRROR)
+   if(m_cfg.reverseMode==FP_REVERSE_SWAP_KEEPSIZE)
+     {
+      double trueRisk=MathAbs(entry-stop)*sizing.lots*m_sym.moneyPerPricePerLot;
+      tag=StringFormat(" | REVERSED (swap, original size) from a %s signal | TRUE RISK %.0f vs target %.0f",
+                       signalDir>0 ? "LONG" : "SHORT", trueRisk, m_cfg.riskTargetUsd);
+     }
+   else if(m_cfg.reverseMode==FP_REVERSE_MIRROR)
       tag=StringFormat(" | REVERSED (mirror) from a %s signal",signalDir>0 ? "LONG" : "SHORT");
    else if(m_cfg.reverseMode==FP_REVERSE_SWAP)
       tag=StringFormat(" | REVERSED (swap) from a %s signal",signalDir>0 ? "LONG" : "SHORT");
