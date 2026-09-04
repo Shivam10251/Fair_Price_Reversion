@@ -171,12 +171,9 @@ void CFpmrStrategy::OnClosedBar(void)
   }
 
 //+------------------------------------------------------------------+
-//| Which session the strategy considers itself in.                  |
-//|                                                                  |
-//| Two ways a session's trading can begin from the news candle,      |
-//| before the session window itself opens, are wired here in the NT8 |
-//| build. Until phase 6 supplies a news resolver no capture ever     |
-//| exists, so this resolves to the plain session window.             |
+//| Which session the strategy considers itself in. The news early-   |
+//| start branches are wired but inert until phase 6, so today this   |
+//| resolves to the plain session window.                             |
 //+------------------------------------------------------------------+
 void CFpmrStrategy::ResolveTradingWindow(const SessionEvaluation &ev)
   {

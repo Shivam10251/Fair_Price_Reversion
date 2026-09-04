@@ -58,6 +58,9 @@ struct FpmrConfig
    bool              session1Enabled;  string session1Window;
    bool              session2Enabled;  string session2Window;
    bool              session3Enabled;  string session3Window;
+   FpFpInherit       session1FpFrom;
+   FpFpInherit       session2FpFrom;
+   FpFpInherit       session3FpFrom;
 
    //--- 2 Fair Price
    FpSource          fairPriceSource;
@@ -308,6 +311,23 @@ public:
 
       m_structure.Init(cfg.activeLevelMode);
       m_fair.Init(true);   // news Fair Price expiry - inert until phase 6
+      m_fair.SetInheritance((int)cfg.session1FpFrom,(int)cfg.session2FpFrom,(int)cfg.session3FpFrom);
+
+      // A session cannot anchor to itself, and anchoring to a disabled session
+      // would silently stop it trading - both are configuration errors worth
+      // naming rather than discovering from an empty result.
+      int froms[4]; froms[1]=(int)cfg.session1FpFrom; froms[2]=(int)cfg.session2FpFrom; froms[3]=(int)cfg.session3FpFrom;
+      bool on[4];   on[1]=cfg.session1Enabled; on[2]=cfg.session2Enabled; on[3]=cfg.session3Enabled;
+      for(int i=1;i<=3;i++)
+        {
+         if(froms[i]==0 || !on[i]) continue;
+         if(froms[i]==i)
+            Fail(StringFormat("Session %d is set to inherit its own Fair Price.",i));
+         else if(!on[froms[i]])
+            Fail(StringFormat("Session %d inherits session %d's Fair Price, but session %d is disabled, "
+                              "so session %d would never have a reference and would never trade.",
+                              i,froms[i],froms[i],i));
+        }
       m_vwap.Reset();
 
       // Only build what the filter will actually read - an unused EMA is pure

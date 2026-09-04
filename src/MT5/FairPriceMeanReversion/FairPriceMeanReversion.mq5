@@ -29,9 +29,16 @@ input bool   InpAutoAdjustForUsDst = true;           // Times are SUMMER (auto-a
 input bool   InpSession1Enabled    = true;           // Session 1 enabled
 input string InpSession1Window     = "1900-2100";    // Session 1 window (HHMM-HHMM, end exclusive)
 input bool   InpSession2Enabled    = true;          // Session 2 enabled
-input string InpSession2Window     = "0330-0530";    // Session 2 window
-input bool   InpSession3Enabled    = false;          // Session 3 enabled
-input string InpSession3Window     = "2330-0030";    // Session 3 window
+input string InpSession2Window     = "0530-0730";    // Session 2 window
+input bool   InpSession3Enabled    = true;           // Session 3 enabled
+input string InpSession3Window     = "0030-0230";    // Session 3 window
+// Which session's opening reference each window is measured against. "Own" is
+// the original rule - the session's own first candle. Inheriting means the
+// session is anchored to another session's Fair Price from the SAME trading
+// day; if that session never set one, the inheriting session does not trade.
+input FpFpInherit InpSession1FpFrom = FP_FP_OWN; // Session 1 Fair Price source
+input FpFpInherit InpSession2FpFrom = FP_FP_OWN; // Session 2 Fair Price source
+input FpFpInherit InpSession3FpFrom = FP_FP_S1;  // Session 3 Fair Price source
 
 //--- 1b · BROKER SERVER CLOCK (MT5 only) --------------------------------------
 // MT5 stamps bars in broker server time, which is an unnamed zone with its own
@@ -66,8 +73,8 @@ input FpActiveLevelMode InpActiveLevelMode   = FP_LEVEL_LATEST_SWING;   // Activ
 //--- 4 · TRADE MANAGEMENT -----------------------------------------------------
 input group "4 · Trade Management"
 input double InpRewardRatio                      = 1.5;   // Band 1 (near) risk / reward ratio
-input int    InpMaxTradesPerDay                  = 20;     // Max trades per DAY (0 = unlimited)
-input int    InpMaxTradesPerSession              = 20;     // Max trades per SESSION (0 = unlimited)
+input int    InpMaxTradesPerDay                  = 30;     // Max trades per DAY (0 = unlimited)
+input int    InpMaxTradesPerSession              = 10;     // Max trades per SESSION (0 = unlimited)
 input int    InpSetupValidityBars                = 30;    // Setup validity (bars, 0 = never expires)
 input bool   InpOnlyOneOpenTrade                 = false; // Only one open trade at a time
 input int    InpMaxConcurrentEntriesPerDirection = 3;     // Max concurrent entries per direction (needs a HEDGING account)
@@ -219,6 +226,9 @@ int OnInit()
    cfg.session1Enabled      = InpSession1Enabled;   cfg.session1Window = InpSession1Window;
    cfg.session2Enabled      = InpSession2Enabled;   cfg.session2Window = InpSession2Window;
    cfg.session3Enabled      = InpSession3Enabled;   cfg.session3Window = InpSession3Window;
+   cfg.session1FpFrom       = InpSession1FpFrom;
+   cfg.session2FpFrom       = InpSession2FpFrom;
+   cfg.session3FpFrom       = InpSession3FpFrom;
 
    cfg.fairPriceSource           = InpFairPriceSource;
    cfg.fairPriceReferenceMinutes = InpFairPriceReferenceMinutes;

@@ -30,6 +30,7 @@
 
 #include "FpmrEnums.mqh"
 #include "NewsTypes.mqh"
+#include "FpmrTimeZone.mqh"   // FpDateOnly - the trading-day key for inheritance
 
 class CFairPriceEngine
   {
@@ -44,6 +45,13 @@ private:
 
    int         m_currentSessionIndex;
    bool        m_armed;
+
+   //--- Fair Price each session established on the CURRENT trading day, so a
+   //    later session can be anchored to an earlier one's opening reference.
+   //    Index 1..3; slot 0 unused. Cleared when the trading day rolls.
+   double      m_dayFp[4];
+   datetime    m_dayFpDay;
+   int         m_inheritFrom[4];   // 0 = own first candle, else the source session
 
    //--- When true a news Fair Price is discarded at the session open, handing
    //    the session over to its own first-candle rule.
@@ -72,6 +80,16 @@ private:
 public:
                      CFairPriceEngine(void) : m_newsExpiresAtSessionOpen(true) { Reset(); }
 
+   //--- inheritFrom[i] is the session index whose Fair Price session i adopts,
+   //    or 0 for its own first candle.
+   void              SetInheritance(const int s1From,const int s2From,const int s3From)
+     {
+      m_inheritFrom[0]=0;
+      m_inheritFrom[1]=s1From;
+      m_inheritFrom[2]=s2From;
+      m_inheritFrom[3]=s3From;
+     }
+
    void              Init(const bool newsExpiresAtSessionOpen)
      {
       m_newsExpiresAtSessionOpen=newsExpiresAtSessionOpen;
@@ -94,6 +112,9 @@ public:
       m_changedThisBar      = false;
       m_currentSessionIndex = 0;
       m_armed               = false;
+      m_dayFpDay            = 0;
+      for(int i=0;i<4;i++)
+         m_dayFp[i]=FPMR_NA;
       ClearNews();
      }
 
@@ -121,6 +142,16 @@ public:
      {
       m_changedThisBar=false;
       double before=m_fairPrice;
+
+      // A new trading day wipes what each session anchored to, so an inheriting
+      // session can never pick up yesterday's reference.
+      datetime day=FpDateOnly(tzNow);
+      if(day!=m_dayFpDay)
+        {
+         m_dayFpDay=day;
+         for(int i=0;i<4;i++)
+            m_dayFp[i]=FPMR_NA;
+        }
 
       // 1. A news candle just printed: Fair Price goes live immediately, even
       //    though the session it belongs to has not opened yet.
@@ -155,9 +186,26 @@ public:
            }
          else
            {
-            m_fairPrice=FPMR_NA;
-            m_armed=true;
             ClearNews();
+
+            int src=(sessionIndex>=1 && sessionIndex<=3 ? m_inheritFrom[sessionIndex] : 0);
+
+            if(src>=1 && src<=3 && src!=sessionIndex)
+              {
+               // Anchored to another session's opening reference. If that session
+               // never set one today there is nothing to measure against, so this
+               // session stays without a Fair Price and simply does not trade.
+               m_fairPrice = m_dayFp[src];
+               m_armed     = false;
+
+               if(!FpIsNa(m_fairPrice))
+                  m_dayFp[sessionIndex]=m_fairPrice;
+              }
+            else
+              {
+               m_fairPrice=FPMR_NA;
+               m_armed=true;
+              }
            }
         }
       else if(m_armed)
@@ -166,6 +214,10 @@ public:
          m_isNewsFairPrice = false;
          m_newsBias        = FP_BIAS_REVERSION;
          m_armed           = false;
+
+         // Remember what this session anchored to, for any session inheriting it.
+         if(m_currentSessionIndex>=1 && m_currentSessionIndex<=3 && !FpIsNa(m_fairPrice))
+            m_dayFp[m_currentSessionIndex]=m_fairPrice;
         }
 
       bool wasNa=FpIsNa(before);

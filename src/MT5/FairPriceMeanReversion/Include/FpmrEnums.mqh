@@ -62,6 +62,21 @@ enum FpSetupBand
    FP_BAND_BEYOND = 3
   };
 
+//--- Where a session gets its Fair Price from --------------------------------
+//  Own : the session's own first reference candle - the original rule.
+//  S1/S2/S3 : the session INHERITS the Fair Price another session established
+//  earlier on the same trading day, so it is measured against that session's
+//  opening reference rather than its own. If the source session never set one
+//  that day the inheriting session gets NO Fair Price and therefore does not
+//  trade, which keeps the anchor honest instead of quietly substituting one.
+enum FpFpInherit
+  {
+   FP_FP_OWN = 0, // Own first candle
+   FP_FP_S1  = 1, // Inherit session 1's Fair Price
+   FP_FP_S2  = 2, // Inherit session 2's Fair Price
+   FP_FP_S3  = 3  // Inherit session 3's Fair Price
+  };
+
 //--- What to do with a setup that lands in the FAR band ----------------------
 //  FairPrice : take it and target Fair Price itself - the full reversion. This
 //              is the original behaviour, and the reason the target can end up
