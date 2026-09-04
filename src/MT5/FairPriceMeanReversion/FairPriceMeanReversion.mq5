@@ -89,6 +89,16 @@ input double InpFixedTakeProfitPoints = 48.0;  // Fixed take profit (price point
 input group "4d · Trailing Stop"
 input FpTrailMode InpTrailMode = FP_TRAIL_OFF; // Trailing stop mode (ignored under Fixed TP/SL)
 
+//--- 4e · REVERSE SIGNALS -----------------------------------------------------
+// Takes the opposite side of every setup. The setup is still read, gated,
+// classified and sized exactly as before - only the order that reaches the
+// broker is flipped, and the bracket is MIRRORED about the entry so the stop
+// and target distances (and therefore the risk the sizer computed) are
+// unchanged. A long signal with a 30 point stop and a 48 point target becomes
+// a short with a 30 point stop and a 48 point target on the other side.
+input group "4e · Reverse signals"
+input bool InpReverseSignals = false; // Reverse every trade (long signal -> sell, short signal -> buy)
+
 //--- 5 · RISK SIZING ----------------------------------------------------------
 input group "5 · Risk Sizing"
 input double InpRiskTargetUSD    = 900.0;  // Risk target (account currency)
@@ -228,7 +238,8 @@ int OnInit()
    cfg.fixedStopLossPoints   = InpFixedStopLossPoints;
    cfg.fixedTakeProfitPoints = InpFixedTakeProfitPoints;
 
-   cfg.trailMode = InpTrailMode;
+   cfg.trailMode      = InpTrailMode;
+   cfg.reverseSignals = InpReverseSignals;
 
    cfg.riskTargetUsd    = InpRiskTargetUSD;
    cfg.riskToleranceUsd = InpRiskToleranceUSD;

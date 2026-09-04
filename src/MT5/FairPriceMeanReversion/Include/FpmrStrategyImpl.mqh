@@ -171,39 +171,6 @@ void CFpmrStrategy::OnClosedBar(void)
   }
 
 //+------------------------------------------------------------------+
-//| Chart drawing                                                    |
-//|                                                                  |
-//| Runs last, so the boxes reflect the state the bar ended in. Every |
-//| time value is converted back to SERVER time first, because that   |
-//| is the clock MT5 anchors chart objects to.                       |
-//+------------------------------------------------------------------+
-void CFpmrStrategy::PaintChart(const SessionEvaluation &ev,const bool isSessionStart)
-  {
-   if(!m_painter.Active())
-      return;
-
-   if(m_effSession!=0 && ev.sessionOpenTz>0)
-     {
-      datetime closeTz     = m_sessions.CloseOfSession(m_effSession,ev.sessionOpenTz);
-      datetime openServer  = m_clock.FromZone(ev.sessionOpenTz,m_sessionTz);
-      datetime closeServer = m_clock.FromZone(closeTz,m_sessionTz);
-
-      m_painter.SessionBar(m_effSession,openServer,closeServer,m_barHigh,m_barLow,isSessionStart);
-      m_painter.FairPriceBar(m_fairPrice,m_hasFair);
-     }
-
-   int n=m_trades.RecordCount();
-   for(int i=0;i<n;i++)
-     {
-      TradeRecord t;
-      m_trades.GetRecord(i,t);
-      m_painter.TradeZones(t,m_barOpenTime+m_primarySeconds);
-     }
-
-   m_painter.Flush();
-  }
-
-//+------------------------------------------------------------------+
 //| Which session the strategy considers itself in.                  |
 //|                                                                  |
 //| Two ways a session's trading can begin from the news candle,      |
@@ -369,7 +336,12 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
                  m_sym.lotMin,m_sym.lotMax,m_sym.lotStep,m_cfg.maxLots,
                  sizing);
 
-   int openDir=m_trades.OpenCountDirection(dir);
+   // Concurrency is counted on the side that will actually be PLACED. Under
+   // reverse mode the signalled side and the executed side are opposites, and
+   // counting the signalled one would police a direction that never reaches
+   // the account.
+   int execDirForCount=(m_cfg.reverseSignals ? -dir : dir);
+   int openDir=m_trades.OpenCountDirection(execDirForCount);
 
    GateState g;
    GateStateClear(g);
@@ -438,9 +410,35 @@ void CFpmrStrategy::SubmitEntry(const int dir,const FpBreakEvent evt,const doubl
 
    double target=FpRoundToTick(rawTarget,m_sym);
 
+   //--- REVERSE MODE -----------------------------------------------------
+   // The setup is still read, gated and sized exactly as a long (or short);
+   // only the order that reaches the broker is the opposite side.
+   //
+   // The bracket must be MIRRORED about the entry, not merely relabelled. A
+   // long's stop sits below the entry: handing that same level to a sell
+   // order would make it a profit target and put the take profit above as a
+   // stop, which is either rejected or - worse - accepted inverted. Mirroring
+   // preserves both distances exactly, so the risk the position sizer already
+   // computed still holds and the R multiple is unchanged.
+   int    execDir    = dir;
+   double execStop   = stop;
+   double execTarget = target;
+
+   if(m_cfg.reverseSignals)
+     {
+      execDir    = -dir;
+      execStop   = FpRoundToTick(2.0*entry-stop,  m_sym);
+      execTarget = FpRoundToTick(2.0*entry-target,m_sym);
+
+      // The mirror of Fair Price is not Fair Price, so the label must not claim it is.
+      targetIsFair=false;
+     }
+
    // After rounding the target must still sit at least one tick beyond the
-   // signal price, otherwise the bracket is nonsense.
-   bool targetViable=(dir<0 ? target<=entry-m_sym.tickSize : target>=entry+m_sym.tickSize);
+   // signal price, otherwise the bracket is nonsense. Tested on the side that
+   // is actually going to be placed.
+   bool targetViable=(execDir<0 ? execTarget<=entry-m_sym.tickSize
+                                : execTarget>=entry+m_sym.tickSize);
    if(!targetViable)
      {
       RecordRejection(dir,FP_REJ_RISK,sizing);
@@ -451,7 +449,7 @@ void CFpmrStrategy::SubmitEntry(const int dir,const FpBreakEvent evt,const doubl
    FpTrailMode trail=(useFixed ? FP_TRAIL_OFF : m_cfg.trailMode);
 
    string error="";
-   if(!m_trades.Submit(dir,evt,entry,stop,target,targetIsFair,trail,sizing,
+   if(!m_trades.Submit(execDir,evt,entry,execStop,execTarget,targetIsFair,trail,sizing,
                        m_barIndex,m_barOpenTime,m_effSession,error))
      {
       m_lastRejectText="BROKER";
@@ -464,16 +462,19 @@ void CFpmrStrategy::SubmitEntry(const int dir,const FpBreakEvent evt,const doubl
    m_tradesDay++;
    m_tradesSession++;
 
-   Print(StringFormat("%s  ENTRY %s %s #%d %s lots @ %s | SL %s | TP %s%s  |  %s",
+   Print(StringFormat("%s  ENTRY %s %s #%d %s lots @ %s | SL %s | TP %s%s%s  |  %s",
                       TimeToString(m_barOpenTime,TIME_DATE|TIME_SECONDS),
-                      dir>0 ? "LONG" : "SHORT",
+                      execDir>0 ? "LONG" : "SHORT",
                       FpBreakEventText(evt),
                       m_trades.TradeSequence(),
                       DoubleToString(sizing.lots,m_sym.lotDigits),
                       DoubleToString(entry,m_sym.digits),
-                      DoubleToString(stop,m_sym.digits),
-                      DoubleToString(target,m_sym.digits),
+                      DoubleToString(execStop,m_sym.digits),
+                      DoubleToString(execTarget,m_sym.digits),
                       targetIsFair ? " | FP-target" : (useFixed ? " | fixed" : ""),
+                      m_cfg.reverseSignals
+                        ? StringFormat(" | REVERSED from a %s signal",dir>0 ? "LONG" : "SHORT")
+                        : "",
                       SizingDescribe(sizing,m_cfg.riskTargetUsd,m_cfg.riskToleranceUsd,
                                      m_cfg.riskHardCapUsd,m_sym.lotStep)));
   }

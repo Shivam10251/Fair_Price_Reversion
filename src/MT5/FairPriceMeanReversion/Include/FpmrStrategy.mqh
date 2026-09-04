@@ -94,6 +94,9 @@ struct FpmrConfig
    //--- 4d Trailing
    FpTrailMode       trailMode;
 
+   //--- 4e Reverse
+   bool              reverseSignals;
+
    //--- 5 Risk sizing (the manager owns the daily P&L limits; these size a trade)
    double            riskTargetUsd;
    double            riskToleranceUsd;
@@ -429,6 +432,7 @@ public:
 //    500-line ceiling this repository works to.
 #include "FpmrStrategyImpl.mqh"
 #include "FpmrStrategyFilters.mqh"
+#include "FpmrStrategyPaint.mqh"
 
 #endif // FPMR_STRATEGY_MQH
 //+------------------------------------------------------------------+
