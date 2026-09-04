@@ -27,7 +27,7 @@ input group "1 · Sessions"
 input string InpSessionTimeZoneId  = "Asia/Kolkata"; // Session timezone (every window below is TYPED in this zone)
 input bool   InpAutoAdjustForUsDst = true;           // Times are SUMMER (auto-adjust for winter)
 input bool   InpSession1Enabled    = true;           // Session 1 enabled
-input string InpSession1Window     = "1900-2030";    // Session 1 window (HHMM-HHMM, end exclusive)
+input string InpSession1Window     = "1900-2100";    // Session 1 window (HHMM-HHMM, end exclusive)
 input bool   InpSession2Enabled    = false;          // Session 2 enabled
 input string InpSession2Window     = "2000-2100";    // Session 2 window
 input bool   InpSession3Enabled    = false;          // Session 3 enabled
@@ -45,24 +45,24 @@ input FpServerDst InpServerDst            = FP_SRVDST_US; // Which DST calendar 
 
 //--- 2 · FAIR PRICE -----------------------------------------------------------
 input group "2 · Fair Price"
-input FpSource InpFairPriceSource           = FP_SRC_CLOSE; // Fair Price source (first reference candle)
+input FpSource InpFairPriceSource           = FP_SRC_OPEN;  // Fair Price source (first reference candle)
 input int      InpFairPriceReferenceMinutes = 1;            // Reference candle minutes (1,2,3,4,5,6,10,12,15,20,30)
 input double   InpZonePercent               = 0.3;          // Non-tradeable zone (% of Fair Price) - nothing closer is traded
 input double   InpBand1Percent              = 0.5;          // Band 1 - outer edge of the NEAR band (fixed SL/TP region)
-input double   InpBand2Percent              = 0.0;          // Band 2 - outer edge of the FAR band (0 = no outer limit)
+input double   InpBand2Percent              = 0.8;          // Band 2 - outer edge of the FAR band (0 = no outer limit)
 
 //--- 3 · MARKET STRUCTURE -----------------------------------------------------
 input group "3 · Market Structure"
-input int               InpPivotLeftBars     = 3;                       // Pivot left bars
-input int               InpPivotRightBars    = 2;                       // Pivot right bars (confirmation delay)
+input int               InpPivotLeftBars     = 1;                       // Pivot left bars
+input int               InpPivotRightBars    = 1;                       // Pivot right bars (confirmation delay)
 input FpBreakConfirm    InpBreakConfirmation = FP_BREAK_CLOSE;          // Break confirmation
 input FpActiveLevelMode InpActiveLevelMode   = FP_LEVEL_LATEST_SWING;   // Active level update mode
 
 //--- 4 · TRADE MANAGEMENT -----------------------------------------------------
 input group "4 · Trade Management"
 input double InpRewardRatio                      = 1.5;   // Band 1 (near) risk / reward ratio
-input int    InpMaxTradesPerDay                  = 3;     // Max trades per DAY (0 = unlimited)
-input int    InpMaxTradesPerSession              = 0;     // Max trades per SESSION (0 = unlimited)
+input int    InpMaxTradesPerDay                  = 10;     // Max trades per DAY (0 = unlimited)
+input int    InpMaxTradesPerSession              = 10;     // Max trades per SESSION (0 = unlimited)
 input int    InpSetupValidityBars                = 30;    // Setup validity (bars, 0 = never expires)
 input bool   InpOnlyOneOpenTrade                 = false; // Only one open trade at a time
 input int    InpMaxConcurrentEntriesPerDirection = 3;     // Max concurrent entries per direction (needs a HEDGING account)
@@ -82,8 +82,8 @@ input FpSameBarPriority InpSameBarPriority       = FP_SAMEBAR_SL_FIRST; // Same-
 // candle's stop and target Fair Price itself.
 input group "4c · Fixed TP/SL (near band)"
 input bool   InpUseFixedNearBand      = true;  // Near band uses fixed SL/TP instead of the R:R multiple
-input double InpFixedStopLossPoints   = 40.0;  // Fixed stop loss (price points, e.g. 40 = 40 NAS100 index points)
-input double InpFixedTakeProfitPoints = 60.0;  // Fixed take profit (price points)
+input double InpFixedStopLossPoints   = 30.0;  // Fixed stop loss (price points, e.g. 40 = 40 NAS100 index points)
+input double InpFixedTakeProfitPoints = 48.0;  // Fixed take profit (price points)
 
 //--- 4d · TRAILING STOP -------------------------------------------------------
 input group "4d · Trailing Stop"
@@ -92,8 +92,8 @@ input FpTrailMode InpTrailMode = FP_TRAIL_OFF; // Trailing stop mode (ignored un
 //--- 5 · RISK SIZING ----------------------------------------------------------
 input group "5 · Risk Sizing"
 input double InpRiskTargetUSD    = 900.0;  // Risk target (account currency)
-input double InpRiskToleranceUSD = 180.0; // Risk tolerance (reporting band only)
-input double InpRiskHardCapUSD   = 1350.0;// Risk hard cap (never exceeded)
+input double InpRiskToleranceUSD = 100.0; // Risk tolerance (reporting band only)
+input double InpRiskHardCapUSD   = 1000.0;// Risk hard cap (never exceeded)
 input double InpMaxLots          = 10.0;  // Max lots (0 = only the broker's own ceiling)
 
 //--- 5b · DAILY LIMITS --------------------------------------------------------
@@ -101,10 +101,10 @@ input double InpMaxLots          = 10.0;  // Max lots (0 = only the broker's own
 // day is evaluated in the session time zone, so an evening open belongs to the
 // following day exactly as the trade counters do.
 input group "5b · Daily Limits"
-input bool   InpUseDailyPnlLimits   = false; // Use daily P&L limits
-input double InpDailyLossLimitUSD   = 400.0; // Daily loss limit (positive number, 0 = off)
+input bool   InpUseDailyPnlLimits   = true;  // Use daily P&L limits
+input double InpDailyLossLimitUSD   = 2500.0; // Daily loss limit (positive number, 0 = off)
 input double InpDailyProfitLimitUSD = 600.0; // Daily profit limit (0 = off)
-input bool   InpFlattenOnDailyLimit = false; // Flatten open trades when a limit is hit
+input bool   InpFlattenOnDailyLimit = true;  // Flatten open trades when a limit is hit
 
 //--- 7 · FILTERS --------------------------------------------------------------
 input group "7 · Filters"
@@ -138,7 +138,7 @@ input bool  InpKeepObjectsOnExit = false;        // Keep the drawings after the 
 
 //--- 10 · DEBUG ---------------------------------------------------------------
 input group "10 · Debug"
-input bool InpVerboseLogging = false; // Verbose logging (every entry, skip and trail move)
+input bool InpVerboseLogging = true;  // Verbose logging (every entry, skip and trail move)
 
 //--- Runtime ------------------------------------------------------------------
 CFpmrStrategy  g_strategy;
