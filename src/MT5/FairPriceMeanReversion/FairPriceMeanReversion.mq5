@@ -28,8 +28,8 @@ input string InpSessionTimeZoneId  = "Asia/Kolkata"; // Session timezone (every 
 input bool   InpAutoAdjustForUsDst = true;           // Times are SUMMER (auto-adjust for winter)
 input bool   InpSession1Enabled    = true;           // Session 1 enabled
 input string InpSession1Window     = "1900-2100";    // Session 1 window (HHMM-HHMM, end exclusive)
-input bool   InpSession2Enabled    = false;          // Session 2 enabled
-input string InpSession2Window     = "2000-2100";    // Session 2 window
+input bool   InpSession2Enabled    = true;          // Session 2 enabled
+input string InpSession2Window     = "0330-0530";    // Session 2 window
 input bool   InpSession3Enabled    = false;          // Session 3 enabled
 input string InpSession3Window     = "2330-0030";    // Session 3 window
 
@@ -66,8 +66,8 @@ input FpActiveLevelMode InpActiveLevelMode   = FP_LEVEL_LATEST_SWING;   // Activ
 //--- 4 · TRADE MANAGEMENT -----------------------------------------------------
 input group "4 · Trade Management"
 input double InpRewardRatio                      = 1.5;   // Band 1 (near) risk / reward ratio
-input int    InpMaxTradesPerDay                  = 10;     // Max trades per DAY (0 = unlimited)
-input int    InpMaxTradesPerSession              = 10;     // Max trades per SESSION (0 = unlimited)
+input int    InpMaxTradesPerDay                  = 20;     // Max trades per DAY (0 = unlimited)
+input int    InpMaxTradesPerSession              = 20;     // Max trades per SESSION (0 = unlimited)
 input int    InpSetupValidityBars                = 30;    // Setup validity (bars, 0 = never expires)
 input bool   InpOnlyOneOpenTrade                 = false; // Only one open trade at a time
 input int    InpMaxConcurrentEntriesPerDirection = 3;     // Max concurrent entries per direction (needs a HEDGING account)
@@ -111,7 +111,7 @@ input FpReverseMode InpReverseMode = FP_REVERSE_OFF; // Reverse mode (see below)
 
 //--- 5 · RISK SIZING ----------------------------------------------------------
 input group "5 · Risk Sizing"
-input double InpRiskTargetUSD    = 900.0;  // Risk target (account currency)
+input double InpRiskTargetUSD    = 500.0;  // Risk target (account currency)
 input double InpRiskToleranceUSD = 100.0; // Risk tolerance (reporting band only)
 input double InpRiskHardCapUSD   = 1000.0;// Risk hard cap (never exceeded)
 input double InpMaxLots          = 10.0;  // Max lots (0 = only the broker's own ceiling)
