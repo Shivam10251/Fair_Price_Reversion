@@ -75,6 +75,23 @@ enum FpTrailMode
    FP_TRAIL_STRUCTURE = 2  // Structure - trails confirmed swings
   };
 
+//--- How, if at all, a setup is inverted before it reaches the broker ---------
+//  Off    : trade the setup as signalled.
+//  Mirror : opposite side, stop and target MIRRORED about the entry, so both
+//           distances - and therefore the sized risk and the R multiple - are
+//           unchanged. The reversed trade still has a near stop and a far
+//           target, so it can lose the same setup the original lost.
+//  Swap   : opposite side with the stop and target LEVELS exchanged. This is
+//           the true P&L inverse: the reversed trade loses exactly when the
+//           original would have won, so the two win rates sum to 100%. Note
+//           the risk distance changes, so the position is re-sized on it.
+enum FpReverseMode
+  {
+   FP_REVERSE_OFF    = 0, // Off - trade the setup as signalled
+   FP_REVERSE_MIRROR = 1, // Mirror bracket - opposite side, same SL and TP distances
+   FP_REVERSE_SWAP   = 2  // Swap bracket - opposite side, SL and TP exchanged (true inverse)
+  };
+
 //--- Impact rating as parsed from the calendar file ---------------------------
 enum FpNewsImpact
   {

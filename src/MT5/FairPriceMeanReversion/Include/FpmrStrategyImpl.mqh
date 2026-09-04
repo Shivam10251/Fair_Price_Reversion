@@ -328,20 +328,52 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
       stop=FpRoundToTick(dir<0 ? m_barHigh+m_cfg.stopBufferTicks*m_sym.tickSize
                                : m_barLow -m_cfg.stopBufferTicks*m_sym.tickSize, m_sym);
 
-   double risk=(dir<0 ? stop-entry : entry-stop);
+   double signalRisk=(dir<0 ? stop-entry : entry-stop);
+
+   // The target is resolved here rather than at submission, because under SWAP
+   // reverse it becomes the STOP - and the stop is what the position is sized
+   // on. Sizing before the bracket is settled would size the wrong distance.
+   bool   targetIsFair=false;
+   double target=ComputeTarget(dir,entry,signalRisk,band,useFixed,targetIsFair);
+
+   //--- Resolve the bracket that will actually be PLACED ------------------
+   int    execDir    = dir;
+   double execStop   = stop;
+   double execTarget = target;
+
+   if(m_cfg.reverseMode==FP_REVERSE_MIRROR)
+     {
+      // Same distances, other side of the entry. Risk is unchanged.
+      execDir    = -dir;
+      execStop   = FpRoundToTick(2.0*entry-stop,  m_sym);
+      execTarget = FpRoundToTick(2.0*entry-target,m_sym);
+      targetIsFair=false;   // the mirror of Fair Price is not Fair Price
+     }
+   else if(m_cfg.reverseMode==FP_REVERSE_SWAP)
+     {
+      // The true inverse: the original target becomes the stop and vice versa,
+      // so this trade loses exactly when the original would have won.
+      execDir    = -dir;
+      execStop   = target;
+      execTarget = stop;
+      targetIsFair=false;
+     }
+
+   // Risk is measured on the stop that is actually going to sit on the order.
+   // Under SWAP that is the old TARGET distance, which is typically far wider
+   // than the signal's own stop - sizing on the signal stop would silently
+   // multiply the money at risk.
+   double execRisk=MathAbs(entry-execStop);
 
    SizingResult sizing;
-   RiskSizerSize(entry,stop,m_sym.moneyPerPricePerLot,
+   RiskSizerSize(entry,execStop,m_sym.moneyPerPricePerLot,
                  m_cfg.riskTargetUsd,m_cfg.riskToleranceUsd,m_cfg.riskHardCapUsd,
                  m_sym.lotMin,m_sym.lotMax,m_sym.lotStep,m_cfg.maxLots,
                  sizing);
 
-   // Concurrency is counted on the side that will actually be PLACED. Under
-   // reverse mode the signalled side and the executed side are opposites, and
-   // counting the signalled one would police a direction that never reaches
-   // the account.
-   int execDirForCount=(m_cfg.reverseSignals ? -dir : dir);
-   int openDir=m_trades.OpenCountDirection(execDirForCount);
+   // Concurrency is counted on the side that will actually be PLACED. Counting
+   // the signalled side would police a direction that never reaches the account.
+   int openDir=m_trades.OpenCountDirection(execDir);
 
    GateState g;
    GateStateClear(g);
@@ -363,7 +395,7 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
    g.eventOk       = (brk.event==FP_EVENT_CHOCH ? m_cfg.takeChochEntries : m_cfg.takeBosEntries);
    g.emaOk         = EmaOk(dir>0);
    g.vwapOk        = (dir<0 ? VwapOkShort() : VwapOkLong());
-   g.riskOk        = (risk>0.0 && risk>=m_cfg.minStopTicks*m_sym.tickSize);
+   g.riskOk        = (execRisk>0.0 && execRisk>=m_cfg.minStopTicks*m_sym.tickSize);
    g.riskCapOk     = sizing.accepted;
    g.marginOk      = true;
 
@@ -375,106 +407,69 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
       return;
      }
 
-   SubmitEntry(dir,brk.event,entry,stop,risk,sizing,band,useFixed);
+   SubmitEntry(execDir,brk.event,entry,execStop,execTarget,sizing,band,useFixed,dir);
   }
 
 //+------------------------------------------------------------------+
 //| Order submission                                                 |
+//|                                                                  |
+//| The bracket arrives already resolved - side, stop and target are  |
+//| whatever the reverse mode decided - so this only validates it     |
+//| against the entry and hands it to the broker.                     |
 //+------------------------------------------------------------------+
 void CFpmrStrategy::SubmitEntry(const int dir,const FpBreakEvent evt,const double entry,
-                                const double stop,const double risk,const SizingResult &sizing,
-                                const FpSetupBand band,const bool useFixed)
+                                const double stop,const double target,const SizingResult &sizing,
+                                const FpSetupBand band,const bool useFixed,const int signalDir)
   {
-   // Take-profit selection, decided by the band the entry landed in:
-   //   NEAR + fixed on -> a fixed number of points from the entry.
-   //   FAR             -> Fair Price itself (target the full reversion).
-   //   NEAR, fixed off -> the Band 1 risk/reward multiple.
-   double rawTarget;
-   bool   targetIsFair;
-
-   if(useFixed)
-     {
-      rawTarget   =(dir<0 ? entry-m_cfg.fixedTakeProfitPoints : entry+m_cfg.fixedTakeProfitPoints);
-      targetIsFair=false;
-     }
-   else if(band==FP_BAND_FAR)
-     {
-      rawTarget   =m_fairPrice;
-      targetIsFair=true;
-     }
-   else
-     {
-      rawTarget   =(dir<0 ? entry-risk*m_cfg.rewardRatio : entry+risk*m_cfg.rewardRatio);
-      targetIsFair=false;
-     }
-
-   double target=FpRoundToTick(rawTarget,m_sym);
-
-   //--- REVERSE MODE -----------------------------------------------------
-   // The setup is still read, gated and sized exactly as a long (or short);
-   // only the order that reaches the broker is the opposite side.
-   //
-   // The bracket must be MIRRORED about the entry, not merely relabelled. A
-   // long's stop sits below the entry: handing that same level to a sell
-   // order would make it a profit target and put the take profit above as a
-   // stop, which is either rejected or - worse - accepted inverted. Mirroring
-   // preserves both distances exactly, so the risk the position sizer already
-   // computed still holds and the R multiple is unchanged.
-   int    execDir    = dir;
-   double execStop   = stop;
-   double execTarget = target;
-
-   if(m_cfg.reverseSignals)
-     {
-      execDir    = -dir;
-      execStop   = FpRoundToTick(2.0*entry-stop,  m_sym);
-      execTarget = FpRoundToTick(2.0*entry-target,m_sym);
-
-      // The mirror of Fair Price is not Fair Price, so the label must not claim it is.
-      targetIsFair=false;
-     }
-
    // After rounding the target must still sit at least one tick beyond the
-   // signal price, otherwise the bracket is nonsense. Tested on the side that
-   // is actually going to be placed.
-   bool targetViable=(execDir<0 ? execTarget<=entry-m_sym.tickSize
-                                : execTarget>=entry+m_sym.tickSize);
-   if(!targetViable)
+   // entry, and the stop on the other side of it, or the bracket is nonsense.
+   bool bracketSane=(dir<0)
+                    ? (target<=entry-m_sym.tickSize && stop>=entry+m_sym.tickSize)
+                    : (target>=entry+m_sym.tickSize && stop<=entry-m_sym.tickSize);
+
+   if(!bracketSane)
      {
-      RecordRejection(dir,FP_REJ_RISK,sizing);
+      RecordRejection(signalDir,FP_REJ_RISK,sizing);
       return;
      }
 
-   // A fixed-bracket trade is left alone; only the structure-stopped FAR trades trail.
+   // A fixed-bracket trade is left alone; only structure-stopped trades trail.
    FpTrailMode trail=(useFixed ? FP_TRAIL_OFF : m_cfg.trailMode);
 
+   bool reversed=(m_cfg.reverseMode!=FP_REVERSE_OFF);
+   bool fpTarget=(band==FP_BAND_FAR && !useFixed && !reversed);
+
    string error="";
-   if(!m_trades.Submit(execDir,evt,entry,execStop,execTarget,targetIsFair,trail,sizing,
+   if(!m_trades.Submit(dir,evt,entry,stop,target,fpTarget,trail,sizing,
                        m_barIndex,m_barOpenTime,m_effSession,error))
      {
       m_lastRejectText="BROKER";
       Print(StringFormat("%s  ENTRY REFUSED (%s displacement) - %s",
                          TimeToString(m_barOpenTime,TIME_DATE|TIME_SECONDS),
-                         dir<0 ? "bearish" : "bullish", error));
+                         signalDir<0 ? "bearish" : "bullish", error));
       return;
      }
 
    m_tradesDay++;
    m_tradesSession++;
 
+   string tag="";
+   if(m_cfg.reverseMode==FP_REVERSE_MIRROR)
+      tag=StringFormat(" | REVERSED (mirror) from a %s signal",signalDir>0 ? "LONG" : "SHORT");
+   else if(m_cfg.reverseMode==FP_REVERSE_SWAP)
+      tag=StringFormat(" | REVERSED (swap) from a %s signal",signalDir>0 ? "LONG" : "SHORT");
+
    Print(StringFormat("%s  ENTRY %s %s #%d %s lots @ %s | SL %s | TP %s%s%s  |  %s",
                       TimeToString(m_barOpenTime,TIME_DATE|TIME_SECONDS),
-                      execDir>0 ? "LONG" : "SHORT",
+                      dir>0 ? "LONG" : "SHORT",
                       FpBreakEventText(evt),
                       m_trades.TradeSequence(),
                       DoubleToString(sizing.lots,m_sym.lotDigits),
                       DoubleToString(entry,m_sym.digits),
-                      DoubleToString(execStop,m_sym.digits),
-                      DoubleToString(execTarget,m_sym.digits),
-                      targetIsFair ? " | FP-target" : (useFixed ? " | fixed" : ""),
-                      m_cfg.reverseSignals
-                        ? StringFormat(" | REVERSED from a %s signal",dir>0 ? "LONG" : "SHORT")
-                        : "",
+                      DoubleToString(stop,m_sym.digits),
+                      DoubleToString(target,m_sym.digits),
+                      fpTarget ? " | FP-target" : (useFixed && !reversed ? " | fixed" : ""),
+                      tag,
                       SizingDescribe(sizing,m_cfg.riskTargetUsd,m_cfg.riskToleranceUsd,
                                      m_cfg.riskHardCapUsd,m_sym.lotStep)));
   }

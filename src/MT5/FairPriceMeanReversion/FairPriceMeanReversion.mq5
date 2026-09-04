@@ -90,14 +90,19 @@ input group "4d · Trailing Stop"
 input FpTrailMode InpTrailMode = FP_TRAIL_OFF; // Trailing stop mode (ignored under Fixed TP/SL)
 
 //--- 4e · REVERSE SIGNALS -----------------------------------------------------
-// Takes the opposite side of every setup. The setup is still read, gated,
-// classified and sized exactly as before - only the order that reaches the
-// broker is flipped, and the bracket is MIRRORED about the entry so the stop
-// and target distances (and therefore the risk the sizer computed) are
-// unchanged. A long signal with a 30 point stop and a 48 point target becomes
-// a short with a 30 point stop and a 48 point target on the other side.
+// Takes the opposite side of every setup. The setup is still read, gated and
+// classified exactly as before - only the order that reaches the broker changes.
+//
+//   Mirror : same stop and target DISTANCES on the other side of the entry.
+//            Risk and R multiple are unchanged, but because the bracket keeps
+//            its near-stop/far-target shape, a reversed trade can lose the very
+//            setup the original lost - so this is NOT a P&L inverse.
+//   Swap   : the stop and target LEVELS are exchanged. The reversed trade then
+//            loses exactly when the original would have won, which IS the true
+//            P&L inverse. The risk distance becomes the old target distance, so
+//            the position is re-sized on it and the lot count drops.
 input group "4e · Reverse signals"
-input bool InpReverseSignals = false; // Reverse every trade (long signal -> sell, short signal -> buy)
+input FpReverseMode InpReverseMode = FP_REVERSE_OFF; // Reverse mode (see below)
 
 //--- 5 · RISK SIZING ----------------------------------------------------------
 input group "5 · Risk Sizing"
@@ -239,7 +244,7 @@ int OnInit()
    cfg.fixedTakeProfitPoints = InpFixedTakeProfitPoints;
 
    cfg.trailMode      = InpTrailMode;
-   cfg.reverseSignals = InpReverseSignals;
+   cfg.reverseMode    = InpReverseMode;
 
    cfg.riskTargetUsd    = InpRiskTargetUSD;
    cfg.riskToleranceUsd = InpRiskToleranceUSD;

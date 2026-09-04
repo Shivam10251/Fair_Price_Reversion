@@ -95,7 +95,7 @@ struct FpmrConfig
    FpTrailMode       trailMode;
 
    //--- 4e Reverse
-   bool              reverseSignals;
+   FpReverseMode     reverseMode;
 
    //--- 5 Risk sizing (the manager owns the daily P&L limits; these size a trade)
    double            riskTargetUsd;
@@ -416,8 +416,10 @@ private:
    void              PaintChart(const SessionEvaluation &ev,const bool isSessionStart);
    void              RecordRejection(const int dir,const FpReject reason,const SizingResult &sizing);
    void              SubmitEntry(const int dir,const FpBreakEvent evt,const double entry,
-                                 const double stop,const double risk,const SizingResult &sizing,
-                                 const FpSetupBand band,const bool useFixed);
+                                 const double stop,const double target,const SizingResult &sizing,
+                                 const FpSetupBand band,const bool useFixed,const int signalDir);
+   double            ComputeTarget(const int dir,const double entry,const double risk,
+                                   const FpSetupBand band,const bool useFixed,bool &targetIsFair);
 
 public:
    string            LastRejectText(void) const { return(m_lastRejectText); }
