@@ -77,6 +77,7 @@ struct FpmrConfig
    FpActiveLevelMode activeLevelMode;
 
    //--- 4 Trade management
+   FpEntryModel      entryModel;
    double            rewardRatio;
    int               maxTradesPerDay;
    int               maxTradesPerSession;
@@ -85,8 +86,10 @@ struct FpmrConfig
    int               maxConcurrentEntriesPerDirection;
    bool              takeChochEntries;
    bool              takeBosEntries;
-   double            stopBufferTicks;
-   double            minStopTicks;
+   //--- Distances in INDEX POINTS, the same scale as an MNQ point. Not MT5
+   //    "points" (0.01 here) and not ticks - one unit for the whole panel.
+   double            stopBufferPoints;
+   double            minStopPoints;
    bool              closeAtSessionEnd;
    int               minBarsBeforeFirstTrade;
 
@@ -301,11 +304,31 @@ public:
       if(m_trades!=NULL)
          m_trades.SetDayClock(cfg.serverGmtOffsetHours,cfg.serverDst,m_sessionTz);
 
+      // The entry model inverts the direction of every trade, so it is stated
+      // once at load rather than left to be inferred from the entry log.
+      if(cfg.entryModel==FP_ENTRY_BOS_CONTINUATION)
+         Print("FPMR: entry model is BOS CONTINUATION. Above the Fair Price zone only LONGS on a bullish "
+               "BOS, below it only SHORTS on a bearish BOS. Every CHoCH is refused, whatever 'Take CHoCH "
+               "entries' says, and so is any break pointing back toward Fair Price. FAR-band setups exit "
+               "like NEAR ones, because a target at Fair Price sits behind a trade running away from it.");
+
       if(cfg.reverseMode==FP_REVERSE_SWAP_KEEPSIZE)
          Print("FPMR WARNING: reverse mode is 'Swap bracket, ORIGINAL size'. Positions are sized for the "
                "signal's stop but carry the far wider swapped stop, so the money at risk per trade EXCEEDS "
                "the risk target and the hard cap by the target/stop ratio. This mode exists to reproduce the "
                "inverse equity curve for analysis - it is not a risk policy. Every entry logs its TRUE RISK.");
+
+      // Say the unit out loud, with this symbol's own money value, so a distance
+      // typed from MNQ experience is never silently a different size here.
+      double exEntry=25313.30;
+      Print(StringFormat("FPMR units: every distance is an INDEX POINT, identical to one MNQ point. "
+                         "A %.0f point stop on a long at %.2f puts the stop at %.2f. "
+                         "Money differs: %s is %.2f per point per lot, MNQ is 2.00 per contract, "
+                         "so that same stop risks %.2f per lot here versus %.2f per contract there.",
+                         cfg.fixedStopLossPoints, exEntry, exEntry-cfg.fixedStopLossPoints,
+                         sym.name, sym.moneyPerPricePerLot,
+                         cfg.fixedStopLossPoints*sym.moneyPerPricePerLot,
+                         cfg.fixedStopLossPoints*2.0));
 
       m_painter.Init(cfg.paint,sym.digits);
 
@@ -437,6 +460,7 @@ private:
    void              DetectAndFeedPivots(const int barsAvailable);
    void              EvaluateEntry(const StructureBreak &brk);
    bool              SideAllowed(const int dir);
+   bool              EventAllowed(const FpBreakEvent event);
    bool              EmaOk(const bool isLong);
    bool              VwapOkLong(void);
    bool              VwapOkShort(void);

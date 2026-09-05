@@ -93,6 +93,23 @@ enum FpFarBandMode
    FP_FAR_DISABLED   = 2  // Do not trade past Band 1 at all
   };
 
+//--- Which side of the Fair Price zone a break is allowed to trade -----------
+//  Reversion      : the original model. Above the zone only SHORTS, below it
+//                   only LONGS, so every trade heads back toward Fair Price.
+//                   Both BOS and CHoCH are eligible, per their own switches.
+//  BosContinuation: the inverse. Above the zone only LONGS on a BULLISH BOS,
+//                   below it only SHORTS on a BEARISH BOS - the move away from
+//                   Fair Price is traded rather than faded. Every CHoCH is
+//                   refused in this model, and so is any break pointing back
+//                   toward Fair Price, whatever "Take CHoCH entries" says.
+//                   The FAR band cannot target Fair Price here (the trade runs
+//                   the other way), so a FAR setup exits like a NEAR one.
+enum FpEntryModel
+  {
+   FP_ENTRY_REVERSION        = 0, // Reversion - fade back toward Fair Price (original)
+   FP_ENTRY_BOS_CONTINUATION = 1  // BOS continuation - trade away from Fair Price, BOS only
+  };
+
 //--- Trailing-stop behaviour for percentage-band setups (Near and Far) --------
 //  Off       : the stop stays where it was placed at entry.
 //  RStep     : whole-R ratchet - at +1R the stop moves to breakeven, at +2R to

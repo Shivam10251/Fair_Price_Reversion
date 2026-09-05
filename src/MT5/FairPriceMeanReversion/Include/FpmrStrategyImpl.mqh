@@ -157,7 +157,7 @@ void CFpmrStrategy::OnClosedBar(void)
    ctx.close         = m_barClose;
    ctx.lastSwingHigh = m_lastSwingHigh;
    ctx.lastSwingLow  = m_lastSwingLow;
-   ctx.stopBuffer    = m_cfg.stopBufferTicks*m_sym.tickSize;
+   ctx.stopBuffer    = m_cfg.stopBufferPoints;
 
    m_trades.UpdateTrailingStops(ctx);
 
@@ -282,23 +282,6 @@ void CFpmrStrategy::DetectAndFeedPivots(const int barsAvailable)
   }
 
 //+------------------------------------------------------------------+
-//| Which side the current regime allows.                            |
-//|                                                                  |
-//| REVERSION (normal mode, and every non-news session): price above  |
-//| the Fair Price zone only permits shorts, below it only longs -    |
-//| the trade is always back toward Fair Price. CONTINUATION (large   |
-//| news surprise, phase 6) treats the move as legitimate repricing   |
-//| rather than something to fade, so the rule inverts.               |
-//+------------------------------------------------------------------+
-bool CFpmrStrategy::SideAllowed(const int dir)
-  {
-   if(m_fair.NewsBias()==FP_BIAS_CONTINUATION)
-      return(dir<0 ? m_posState==-1 : m_posState==1);
-
-   return(dir<0 ? m_posState==1 : m_posState==-1);
-  }
-
-//+------------------------------------------------------------------+
 //| Entry evaluation                                                 |
 //+------------------------------------------------------------------+
 void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
@@ -316,8 +299,13 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
 
    bool farDisabled=(band==FP_BAND_FAR && m_cfg.farBandMode==FP_FAR_DISABLED);
 
+   // A FAR setup under the BOS-continuation model exits like a NEAR one no
+   // matter what the FAR mode says: that trade runs AWAY from Fair Price, so a
+   // target at Fair Price would sit behind the entry and never fill. "Disabled"
+   // still refuses the setup outright - that is a gating choice, not an exit.
    FpSetupBand exitBand=band;
-   if(band==FP_BAND_FAR && m_cfg.farBandMode==FP_FAR_NEAR_EXIT)
+   if(band==FP_BAND_FAR && (m_cfg.farBandMode==FP_FAR_NEAR_EXIT
+                            || m_cfg.entryModel==FP_ENTRY_BOS_CONTINUATION))
       exitBand=FP_BAND_NEAR;
 
    bool useFixed=(exitBand==FP_BAND_NEAR && m_cfg.useFixedNearBand);
@@ -327,8 +315,8 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
       stop=FpRoundToTick(dir<0 ? entry+m_cfg.fixedStopLossPoints
                                : entry-m_cfg.fixedStopLossPoints, m_sym);
    else
-      stop=FpRoundToTick(dir<0 ? m_barHigh+m_cfg.stopBufferTicks*m_sym.tickSize
-                               : m_barLow -m_cfg.stopBufferTicks*m_sym.tickSize, m_sym);
+      stop=FpRoundToTick(dir<0 ? m_barHigh+m_cfg.stopBufferPoints
+                               : m_barLow -m_cfg.stopBufferPoints, m_sym);
 
    double signalRisk=(dir<0 ? stop-entry : entry-stop);
 
@@ -408,10 +396,10 @@ void CFpmrStrategy::EvaluateEntry(const StructureBreak &brk)
    g.sessionCapOk  = (m_cfg.maxTradesPerSession==0 || m_tradesSession<m_cfg.maxTradesPerSession);
    g.flatOk        = (!m_cfg.onlyOneOpenTrade || m_trades.OpenCount()==0);
    g.concurrencyOk = (m_cfg.onlyOneOpenTrade || openDir<m_cfg.maxConcurrentEntriesPerDirection);
-   g.eventOk       = (brk.event==FP_EVENT_CHOCH ? m_cfg.takeChochEntries : m_cfg.takeBosEntries);
+   g.eventOk       = EventAllowed(brk.event);
    g.emaOk         = EmaOk(dir>0);
    g.vwapOk        = (dir<0 ? VwapOkShort() : VwapOkLong());
-   g.riskOk        = (execRisk>0.0 && execRisk>=m_cfg.minStopTicks*m_sym.tickSize);
+   g.riskOk        = (execRisk>0.0 && execRisk>=m_cfg.minStopPoints);
    g.riskCapOk     = sizing.accepted;
    g.marginOk      = true;
 

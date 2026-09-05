@@ -72,6 +72,16 @@ input FpActiveLevelMode InpActiveLevelMode   = FP_LEVEL_LATEST_SWING;   // Activ
 
 //--- 4 · TRADE MANAGEMENT -----------------------------------------------------
 input group "4 · Trade Management"
+// Entry model - which way a structure break is allowed to trade.
+//   Reversion       : above the zone shorts only, below it longs only. Both
+//                     event types are eligible, per the two switches below.
+//   BOS continuation: above the zone LONGS on a bullish BOS only, below it
+//                     SHORTS on a bearish BOS only. Breaks pointing back toward
+//                     Fair Price are refused, and so is EVERY CHoCH - the
+//                     "Take CHoCH entries" switch has no effect in this model.
+//                     A FAR-band setup exits like a NEAR one, since a target at
+//                     Fair Price sits behind a trade running away from it.
+input FpEntryModel InpEntryModel                 = FP_ENTRY_REVERSION; // Entry model (direction of the trade)
 input double InpRewardRatio                      = 1.5;   // Band 1 (near) risk / reward ratio
 input int    InpMaxTradesPerDay                  = 30;     // Max trades per DAY (0 = unlimited)
 input int    InpMaxTradesPerSession              = 10;     // Max trades per SESSION (0 = unlimited)
@@ -80,11 +90,18 @@ input bool   InpOnlyOneOpenTrade                 = false; // Only one open trade
 input int    InpMaxConcurrentEntriesPerDirection = 3;     // Max concurrent entries per direction (needs a HEDGING account)
 input bool   InpTakeChochEntries                 = true;  // Take CHoCH entries
 input bool   InpTakeBosEntries                   = true;  // Take BOS entries
-input double InpStopBufferTicks                  = 0.0;   // SL buffer (ticks beyond the displacement extreme)
-input double InpMinStopTicks                     = 0.0;   // Minimum stop distance (ticks, 0 = off)
+input double InpStopBufferPoints                 = 0.0;   // SL buffer (index points beyond the displacement extreme)
+input double InpMinStopPoints                    = 0.0;   // Minimum stop distance (index points, 0 = off)
 input bool   InpCloseAtSessionEnd                = false; // Close trades at session end
 input int    InpMinBarsBeforeFirstTrade          = 3;     // Min bars before first trade (warm-up)
 input FpSameBarPriority InpSameBarPriority       = FP_SAMEBAR_SL_FIRST; // Same-candle TP/SL report (reporting only)
+
+//  UNITS. Every distance in this EA is an INDEX POINT - one full point of the
+//  Nasdaq index, which is exactly one MNQ point. Typing 20 gives a 20 point
+//  stop on both, e.g. 25313.30 -> 25293.30. Only the MONEY differs: a NAS100
+//  lot is $10 per point, an MNQ contract is $2, so the same 20 point stop is
+//  $200 per lot here and $40 per contract there. These are NOT MT5 "points"
+//  (0.01 on this symbol) and not ticks.
 
 //--- 4c · FIXED TP/SL FOR THE NEAR BAND ---------------------------------------
 // Applies to NEAR-band setups only - entries between the non-tradeable zone edge
@@ -94,8 +111,8 @@ input FpSameBarPriority InpSameBarPriority       = FP_SAMEBAR_SL_FIRST; // Same-
 // candle's stop and target Fair Price itself.
 input group "4c · Fixed TP/SL (near band)"
 input bool   InpUseFixedNearBand      = true;  // Near band uses fixed SL/TP instead of the R:R multiple
-input double InpFixedStopLossPoints   = 30.0;  // Fixed stop loss (price points, e.g. 40 = 40 NAS100 index points)
-input double InpFixedTakeProfitPoints = 48.0;  // Fixed take profit (price points)
+input double InpFixedStopLossPoints   = 30.0;  // Fixed stop loss (index points = MNQ points)
+input double InpFixedTakeProfitPoints = 48.0;  // Fixed take profit (index points = MNQ points)
 
 //--- 4d · TRAILING STOP -------------------------------------------------------
 input group "4d · Trailing Stop"
@@ -146,7 +163,7 @@ input FpVolumeMode InpVolumeMode    = FP_VOL_AUTO; // VWAP volume source
 //--- 8 · EXECUTION (MT5 only) -------------------------------------------------
 input group "8 · Execution"
 input ulong InpMagicNumber    = 8451207; // Magic number (identifies this EA's positions)
-input ulong InpSlippagePoints = 10;      // Maximum slippage (points)
+input double InpSlippagePoints = 1.0;    // Maximum slippage (index points)
 
 //--- 11 · CHART DISPLAY -------------------------------------------------------
 // Drawn behind the candles, which is how MT5 gives a filled rectangle the
@@ -204,7 +221,11 @@ int OnInit()
 
    FpTradeConfig tcfg;
    tcfg.magic               = InpMagicNumber;
-   tcfg.slippagePoints      = InpSlippagePoints;
+   // The broker counts slippage in ITS points (0.01 on NAS100), so the index
+   // points typed above are converted once here rather than leaving the panel
+   // with one input on a different scale from its neighbours.
+   double symPoint=(g_symbol.point>0.0 ? g_symbol.point : 0.01);
+   tcfg.slippagePoints      = (ulong)MathMax(1.0,MathRound(InpSlippagePoints/symPoint));
    tcfg.riskTargetUsd       = InpRiskTargetUSD;
    tcfg.riskToleranceUsd    = InpRiskToleranceUSD;
    tcfg.riskHardCapUsd      = InpRiskHardCapUSD;
@@ -242,6 +263,7 @@ int OnInit()
    cfg.breakConfirmation = InpBreakConfirmation;
    cfg.activeLevelMode   = InpActiveLevelMode;
 
+   cfg.entryModel                       = InpEntryModel;
    cfg.rewardRatio                      = InpRewardRatio;
    cfg.maxTradesPerDay                  = InpMaxTradesPerDay;
    cfg.maxTradesPerSession              = InpMaxTradesPerSession;
@@ -250,8 +272,8 @@ int OnInit()
    cfg.maxConcurrentEntriesPerDirection = MathMax(1,InpMaxConcurrentEntriesPerDirection);
    cfg.takeChochEntries                 = InpTakeChochEntries;
    cfg.takeBosEntries                   = InpTakeBosEntries;
-   cfg.stopBufferTicks                  = InpStopBufferTicks;
-   cfg.minStopTicks                     = InpMinStopTicks;
+   cfg.stopBufferPoints                 = InpStopBufferPoints;
+   cfg.minStopPoints                    = InpMinStopPoints;
    cfg.closeAtSessionEnd                = InpCloseAtSessionEnd;
    cfg.minBarsBeforeFirstTrade          = InpMinBarsBeforeFirstTrade;
 
