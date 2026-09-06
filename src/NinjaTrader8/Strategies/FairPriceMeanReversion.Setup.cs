@@ -80,6 +80,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 			else if (Band2Percent <= Band1Percent)
 				Fail("Band 2 % (" + Band2Percent + ") must be greater than Band 1 % (" + Band1Percent + ").");
 
+			// The entry model inverts the direction of every trade, so it is stated once
+			// at load rather than left to be inferred from the entry log.
+			if (EntryModel == FpEntryModel.BosContinuation)
+				Print("FPMR: entry model is BOS CONTINUATION. Above the Fair Price zone only LONGS on a bullish "
+				    + "BOS, below it only SHORTS on a bearish BOS. Every CHoCH is refused, whatever 'Take CHoCH "
+				    + "entries' says, and so is any break pointing back toward Fair Price. FAR-band setups take "
+				    + "the R:R target, because Fair Price now sits behind a trade running away from it.");
+
 			if (UseFixedTpSl)
 			{
 				if (FixedStopLossPoints <= 0.0)

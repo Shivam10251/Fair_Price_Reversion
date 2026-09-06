@@ -55,7 +55,7 @@ struct FpTrailContext
    double   close;
    double   lastSwingHigh;   // FPMR_NA when none confirmed this session
    double   lastSwingLow;
-   double   stopBuffer;      // StopBufferTicks * tickSize, in price units
+   double   stopBuffer;      // index points, already in price units
   };
 
 class CTradeManager

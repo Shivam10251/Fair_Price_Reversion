@@ -116,63 +116,67 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		// ── 4 · TRADE MANAGEMENT ──────────────────────────────────────────────────
 		[NinjaScriptProperty]
+		[Display(Name = "Entry model", Description = "Which way a structure break is allowed to trade. Reversion: above the Fair Price zone shorts only, below it longs only — the trade heads back toward Fair Price, and both event types are eligible per the switches below. BOS continuation: above the zone LONGS on a bullish BOS only, below it SHORTS on a bearish BOS only. Breaks pointing back toward Fair Price are refused, and so is EVERY CHoCH — 'Take CHoCH entries' has no effect in this model. FAR-band setups take the R:R target instead of Fair Price, which now sits behind the trade.", GroupName = G_TM, Order = 0)]
+		public FpEntryModel EntryModel { get; set; }
+
+		[NinjaScriptProperty]
 		[Range(0.1, double.MaxValue)]
-		[Display(Name = "Band 1 (near) risk / reward ratio", Description = "Reward multiple used for NEAR-band setups (entry between the zone edge and Band 1). FAR-band setups target Fair Price instead and ignore this. Ignored entirely when Fixed TP/SL is on.", GroupName = G_TM, Order = 0)]
+		[Display(Name = "Band 1 (near) risk / reward ratio", Description = "Reward multiple used for NEAR-band setups (entry between the zone edge and Band 1). FAR-band setups target Fair Price instead and ignore this, except under the BOS-continuation entry model, where they use this multiple too. Ignored entirely when Fixed TP/SL is on.", GroupName = G_TM, Order = 1)]
 		public double RewardRatio { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0, int.MaxValue)]
-		[Display(Name = "Max trades per DAY", Description = "0 = unlimited. Day boundary is evaluated in the session timezone.", GroupName = G_TM, Order = 1)]
+		[Display(Name = "Max trades per DAY", Description = "0 = unlimited. Day boundary is evaluated in the session timezone.", GroupName = G_TM, Order = 2)]
 		public int MaxTradesPerDay { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0, int.MaxValue)]
-		[Display(Name = "Max trades per SESSION", Description = "0 = unlimited.", GroupName = G_TM, Order = 2)]
+		[Display(Name = "Max trades per SESSION", Description = "0 = unlimited.", GroupName = G_TM, Order = 3)]
 		public int MaxTradesPerSession { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0, int.MaxValue)]
-		[Display(Name = "Setup validity (bars)", Description = "Bars from the CONFIRMATION bar of the active level. 0 = never expires.", GroupName = G_TM, Order = 3)]
+		[Display(Name = "Setup validity (bars)", Description = "Bars from the CONFIRMATION bar of the active level. 0 = never expires.", GroupName = G_TM, Order = 4)]
 		public int SetupValidityBars { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Only one open trade at a time", GroupName = G_TM, Order = 4)]
+		[Display(Name = "Only one open trade at a time", GroupName = G_TM, Order = 5)]
 		public bool OnlyOneOpenTrade { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(1, 20)]
-		[Display(Name = "Max concurrent entries per direction", Description = "Used only when 'Only one open trade' is off — NinjaTrader needs an explicit ceiling where Pine used pyramiding.", GroupName = G_TM, Order = 5)]
+		[Display(Name = "Max concurrent entries per direction", Description = "Used only when 'Only one open trade' is off — NinjaTrader needs an explicit ceiling where Pine used pyramiding.", GroupName = G_TM, Order = 6)]
 		public int MaxConcurrentEntriesPerDirection { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Take CHoCH entries", GroupName = G_TM, Order = 6)]
+		[Display(Name = "Take CHoCH entries", GroupName = G_TM, Order = 7)]
 		public bool TakeChochEntries { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Take BOS entries", GroupName = G_TM, Order = 7)]
+		[Display(Name = "Take BOS entries", GroupName = G_TM, Order = 8)]
 		public bool TakeBosEntries { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0.0, double.MaxValue)]
-		[Display(Name = "SL buffer (ticks)", Description = "Extra ticks beyond the displacement candle's extreme.", GroupName = G_TM, Order = 8)]
+		[Display(Name = "SL buffer (ticks)", Description = "Extra ticks beyond the displacement candle's extreme.", GroupName = G_TM, Order = 9)]
 		public double StopBufferTicks { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0.0, double.MaxValue)]
-		[Display(Name = "Minimum stop distance (ticks)", Description = "0 = off. Displacement candles tighter than this are rejected with RISK.", GroupName = G_TM, Order = 9)]
+		[Display(Name = "Minimum stop distance (ticks)", Description = "0 = off. Displacement candles tighter than this are rejected with RISK.", GroupName = G_TM, Order = 10)]
 		public double MinStopTicks { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Close trades at session end", GroupName = G_TM, Order = 10)]
+		[Display(Name = "Close trades at session end", GroupName = G_TM, Order = 11)]
 		public bool CloseAtSessionEnd { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0, 1000)]
-		[Display(Name = "Min bars before first trade", Description = "Warm-up after the trading start point. Structure and Fair Price still run; only entries are blocked.", GroupName = G_TM, Order = 11)]
+		[Display(Name = "Min bars before first trade", Description = "Warm-up after the trading start point. Structure and Fair Price still run; only entries are blocked.", GroupName = G_TM, Order = 12)]
 		public int MinBarsBeforeFirstTrade { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Same-candle TP/SL report", Description = "Reporting only. The real fill comes from the order fill resolution.", GroupName = G_TM, Order = 12)]
+		[Display(Name = "Same-candle TP/SL report", Description = "Reporting only. The real fill comes from the order fill resolution.", GroupName = G_TM, Order = 13)]
 		public FpSameBarPriority SameBarPriority { get; set; }
 
 		// ── 4c · FIXED TP/SL ──────────────────────────────────────────────────────
@@ -406,6 +410,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			BreakConfirmation         = FpBreakConfirm.Close;
 			ActiveLevelMode           = FpActiveLevelMode.LatestSwing;
 
+			EntryModel                       = FpEntryModel.Reversion;
 			RewardRatio                      = 1.5;
 			MaxTradesPerDay                  = 3;
 			MaxTradesPerSession              = 0;

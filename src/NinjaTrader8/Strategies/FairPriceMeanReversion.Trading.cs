@@ -80,7 +80,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				DayCapOk     = MaxTradesPerDay     == 0 || _tradesDay     < MaxTradesPerDay,
 				SessionCapOk = MaxTradesPerSession == 0 || _tradesSession < MaxTradesPerSession,
 				FlatOk       = !OnlyOneOpenTrade || (_openTrades.Count == 0 && Position.MarketPosition == MarketPosition.Flat),
-				EventOk      = brk.Event == FpBreakEvent.CHoCH ? TakeChochEntries : TakeBosEntries,
+				EventOk      = EventAllowed(brk.Event),
 				EmaOk        = dir < 0 ? EmaOkShort() : EmaOkLong(),
 				VwapOk       = dir < 0 ? VwapOkShort() : VwapOkLong(),
 				RiskOk       = risk > 0 && risk >= MinStopTicks * _tickSize,
@@ -101,20 +101,38 @@ namespace NinjaTrader.NinjaScript.Strategies
 		/// <summary>
 		/// Which side the current regime allows.
 		///
-		/// REVERSION (the strategy's normal mode, and every non-news session): price
-		/// above the Fair Price zone only permits shorts, below it only longs — the
-		/// trade is always back toward Fair Price.
+		/// REVERSION: price above the Fair Price zone only permits shorts, below it
+		/// only longs — the trade is always back toward Fair Price.
 		///
-		/// CONTINUATION (large news surprise, only when the continuation option is on):
-		/// the initial move is treated as legitimate repricing rather than something to
-		/// fade, so the rule inverts and the trade goes WITH the displacement.
+		/// CONTINUATION: the rule inverts and the trade goes WITH the displacement,
+		/// away from Fair Price. Two independent things ask for it:
+		///   • the BOS-continuation ENTRY MODEL, the user choosing it for every session;
+		///   • a large news surprise, where the initial move is treated as legitimate
+		///     repricing rather than something to fade.
+		/// Either is enough, so under the BOS-continuation model the news bias can no
+		/// longer flip the direction back.
 		/// </summary>
 		private bool SideAllowed(int dir)
 		{
-			if (_newsBias == FpNewsBias.Continuation)
+			bool continuation = EntryModel == FpEntryModel.BosContinuation
+			                    || _newsBias == FpNewsBias.Continuation;
+
+			if (continuation)
 				return dir < 0 ? _posState == -1 : _posState == 1;
 
 			return dir < 0 ? _posState == 1 : _posState == -1;
+		}
+
+		/// <summary>
+		/// Which break events may become a trade. The BOS-continuation model is BOS-only
+		/// by definition, so a CHoCH is refused there whatever the CHoCH switch says.
+		/// </summary>
+		private bool EventAllowed(FpBreakEvent evt)
+		{
+			if (evt == FpBreakEvent.CHoCH)
+				return EntryModel != FpEntryModel.BosContinuation && TakeChochEntries;
+
+			return TakeBosEntries;
 		}
 
 		// ── Daily realised P&L budget ─────────────────────────────────────────────
@@ -339,6 +357,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 			//   Fixed TP/SL on -> a fixed number of points from the entry.
 			//   FAR band       -> Fair Price itself (target the full reversion).
 			//   NEAR band      -> the Band 1 risk/reward multiple.
+			//
+			// The FAR band's Fair Price target only makes sense while the trade is
+			// heading back toward Fair Price. Under the BOS-continuation model it runs
+			// away from it, so Fair Price would sit behind the entry and never fill —
+			// a FAR setup there takes the R:R multiple like a NEAR one.
 			double rawTarget;
 			bool   targetIsFair;
 
@@ -347,7 +370,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				rawTarget    = dir < 0 ? entry - FixedTakeProfitPoints : entry + FixedTakeProfitPoints;
 				targetIsFair = false;
 			}
-			else if (band == FpSetupBand.Far)
+			else if (band == FpSetupBand.Far && EntryModel != FpEntryModel.BosContinuation)
 			{
 				rawTarget    = _fairPrice;
 				targetIsFair = true;

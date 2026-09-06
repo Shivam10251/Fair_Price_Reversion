@@ -40,6 +40,7 @@ user-editable from the strategy dialog.
 
 | Parameter | Default | Meaning |
 |---|---|---|
+| Entry model | `Reversion` | Which way a break may trade. `Reversion`: above the zone shorts only, below it longs only — back toward Fair Price, BOS and CHoCH both eligible. `BosContinuation`: above the zone LONGS on a bullish BOS only, below it SHORTS on a bearish BOS only; every CHoCH is refused and so is any break pointing back toward Fair Price. FAR-band setups then take the R:R target, since Fair Price sits behind the trade. |
 | Risk / Reward ratio | `1.5` | TP = entry ± risk × RR, unless the extended-move override fires. |
 | Max trades per DAY | `3` | 0 = unlimited. Day boundary is in the session timezone. |
 | Max trades per SESSION | `0` | 0 = unlimited. |

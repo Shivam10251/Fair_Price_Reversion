@@ -31,6 +31,21 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 	public enum FpSetupBand { None, Near, Far, Beyond }
 
 	/// <summary>
+	/// Which side of the Fair Price zone a structure break is allowed to trade.
+	///   Reversion       : the original model. Above the zone only SHORTS, below it
+	///                     only LONGS, so every trade heads back toward Fair Price.
+	///                     Both BOS and CHoCH are eligible, per their own switches.
+	///   BosContinuation : the inverse. Above the zone only LONGS on a bullish BOS,
+	///                     below it only SHORTS on a bearish BOS — the move away from
+	///                     Fair Price is traded rather than faded. Every CHoCH is
+	///                     refused here, and so is any break pointing back toward Fair
+	///                     Price, whatever "Take CHoCH entries" says. A FAR-band setup
+	///                     takes the R:R target rather than Fair Price, which now sits
+	///                     behind a trade running away from it.
+	/// </summary>
+	public enum FpEntryModel { Reversion, BosContinuation }
+
+	/// <summary>
 	/// Trailing-stop behaviour for percentage-band setups (Near and Far).
 	///   Off       : the stop stays where it was placed at entry.
 	///   RStep     : whole-R ratchet — at +1R the stop moves to breakeven, at +2R to

@@ -28,10 +28,17 @@ input string InpSessionTimeZoneId  = "Asia/Kolkata"; // Session timezone (every 
 input bool   InpAutoAdjustForUsDst = true;           // Times are SUMMER (auto-adjust for winter)
 input bool   InpSession1Enabled    = true;           // Session 1 enabled
 input string InpSession1Window     = "1900-2100";    // Session 1 window (HHMM-HHMM, end exclusive)
-input bool   InpSession2Enabled    = false;          // Session 2 enabled
-input string InpSession2Window     = "2000-2100";    // Session 2 window
-input bool   InpSession3Enabled    = false;          // Session 3 enabled
-input string InpSession3Window     = "2330-0030";    // Session 3 window
+input bool   InpSession2Enabled    = true;          // Session 2 enabled
+input string InpSession2Window     = "0530-0730";    // Session 2 window
+input bool   InpSession3Enabled    = true;           // Session 3 enabled
+input string InpSession3Window     = "0030-0230";    // Session 3 window
+// Which session's opening reference each window is measured against. "Own" is
+// the original rule - the session's own first candle. Inheriting means the
+// session is anchored to another session's Fair Price from the SAME trading
+// day; if that session never set one, the inheriting session does not trade.
+input FpFpInherit InpSession1FpFrom = FP_FP_OWN; // Session 1 Fair Price source
+input FpFpInherit InpSession2FpFrom = FP_FP_OWN; // Session 2 Fair Price source
+input FpFpInherit InpSession3FpFrom = FP_FP_S1;  // Session 3 Fair Price source
 
 //--- 1b · BROKER SERVER CLOCK (MT5 only) --------------------------------------
 // MT5 stamps bars in broker server time, which is an unnamed zone with its own
@@ -50,6 +57,11 @@ input int      InpFairPriceReferenceMinutes = 1;            // Reference candle 
 input double   InpZonePercent               = 0.3;          // Non-tradeable zone (% of Fair Price) - nothing closer is traded
 input double   InpBand1Percent              = 0.5;          // Band 1 - outer edge of the NEAR band (fixed SL/TP region)
 input double   InpBand2Percent              = 0.8;          // Band 2 - outer edge of the FAR band (0 = no outer limit)
+// What happens to a setup that lands PAST Band 1 (the FAR band):
+//   Fair Price target - take it and revert the whole way to Fair Price (original)
+//   Exit like a NEAR setup - take it, but use the fixed SL/TP or the R:R multiple
+//   Do not trade      - refuse everything past Band 1, reported as TOO FAR
+input FpFarBandMode InpFarBandMode = FP_FAR_FAIR_PRICE; // FAR band behaviour (past Band 1)
 
 //--- 3 · MARKET STRUCTURE -----------------------------------------------------
 input group "3 · Market Structure"
@@ -60,19 +72,36 @@ input FpActiveLevelMode InpActiveLevelMode   = FP_LEVEL_LATEST_SWING;   // Activ
 
 //--- 4 · TRADE MANAGEMENT -----------------------------------------------------
 input group "4 · Trade Management"
+// Entry model - which way a structure break is allowed to trade.
+//   Reversion       : above the zone shorts only, below it longs only. Both
+//                     event types are eligible, per the two switches below.
+//   BOS continuation: above the zone LONGS on a bullish BOS only, below it
+//                     SHORTS on a bearish BOS only. Breaks pointing back toward
+//                     Fair Price are refused, and so is EVERY CHoCH - the
+//                     "Take CHoCH entries" switch has no effect in this model.
+//                     A FAR-band setup exits like a NEAR one, since a target at
+//                     Fair Price sits behind a trade running away from it.
+input FpEntryModel InpEntryModel                 = FP_ENTRY_REVERSION; // Entry model (direction of the trade)
 input double InpRewardRatio                      = 1.5;   // Band 1 (near) risk / reward ratio
-input int    InpMaxTradesPerDay                  = 10;     // Max trades per DAY (0 = unlimited)
+input int    InpMaxTradesPerDay                  = 30;     // Max trades per DAY (0 = unlimited)
 input int    InpMaxTradesPerSession              = 10;     // Max trades per SESSION (0 = unlimited)
 input int    InpSetupValidityBars                = 30;    // Setup validity (bars, 0 = never expires)
 input bool   InpOnlyOneOpenTrade                 = false; // Only one open trade at a time
 input int    InpMaxConcurrentEntriesPerDirection = 3;     // Max concurrent entries per direction (needs a HEDGING account)
 input bool   InpTakeChochEntries                 = true;  // Take CHoCH entries
 input bool   InpTakeBosEntries                   = true;  // Take BOS entries
-input double InpStopBufferTicks                  = 0.0;   // SL buffer (ticks beyond the displacement extreme)
-input double InpMinStopTicks                     = 0.0;   // Minimum stop distance (ticks, 0 = off)
+input double InpStopBufferPoints                 = 0.0;   // SL buffer (index points beyond the displacement extreme)
+input double InpMinStopPoints                    = 0.0;   // Minimum stop distance (index points, 0 = off)
 input bool   InpCloseAtSessionEnd                = false; // Close trades at session end
 input int    InpMinBarsBeforeFirstTrade          = 3;     // Min bars before first trade (warm-up)
 input FpSameBarPriority InpSameBarPriority       = FP_SAMEBAR_SL_FIRST; // Same-candle TP/SL report (reporting only)
+
+//  UNITS. Every distance in this EA is an INDEX POINT - one full point of the
+//  Nasdaq index, which is exactly one MNQ point. Typing 20 gives a 20 point
+//  stop on both, e.g. 25313.30 -> 25293.30. Only the MONEY differs: a NAS100
+//  lot is $10 per point, an MNQ contract is $2, so the same 20 point stop is
+//  $200 per lot here and $40 per contract there. These are NOT MT5 "points"
+//  (0.01 on this symbol) and not ticks.
 
 //--- 4c · FIXED TP/SL FOR THE NEAR BAND ---------------------------------------
 // Applies to NEAR-band setups only - entries between the non-tradeable zone edge
@@ -82,16 +111,31 @@ input FpSameBarPriority InpSameBarPriority       = FP_SAMEBAR_SL_FIRST; // Same-
 // candle's stop and target Fair Price itself.
 input group "4c · Fixed TP/SL (near band)"
 input bool   InpUseFixedNearBand      = true;  // Near band uses fixed SL/TP instead of the R:R multiple
-input double InpFixedStopLossPoints   = 30.0;  // Fixed stop loss (price points, e.g. 40 = 40 NAS100 index points)
-input double InpFixedTakeProfitPoints = 48.0;  // Fixed take profit (price points)
+input double InpFixedStopLossPoints   = 30.0;  // Fixed stop loss (index points = MNQ points)
+input double InpFixedTakeProfitPoints = 48.0;  // Fixed take profit (index points = MNQ points)
 
 //--- 4d · TRAILING STOP -------------------------------------------------------
 input group "4d · Trailing Stop"
 input FpTrailMode InpTrailMode = FP_TRAIL_OFF; // Trailing stop mode (ignored under Fixed TP/SL)
 
+//--- 4e · REVERSE SIGNALS -----------------------------------------------------
+// Takes the opposite side of every setup. The setup is still read, gated and
+// classified exactly as before - only the order that reaches the broker changes.
+//
+//   Mirror : same stop and target DISTANCES on the other side of the entry.
+//            Risk and R multiple are unchanged, but because the bracket keeps
+//            its near-stop/far-target shape, a reversed trade can lose the very
+//            setup the original lost - so this is NOT a P&L inverse.
+//   Swap   : the stop and target LEVELS are exchanged. The reversed trade then
+//            loses exactly when the original would have won, which IS the true
+//            P&L inverse. The risk distance becomes the old target distance, so
+//            the position is re-sized on it and the lot count drops.
+input group "4e · Reverse signals"
+input FpReverseMode InpReverseMode = FP_REVERSE_OFF; // Reverse mode (see below)
+
 //--- 5 · RISK SIZING ----------------------------------------------------------
 input group "5 · Risk Sizing"
-input double InpRiskTargetUSD    = 900.0;  // Risk target (account currency)
+input double InpRiskTargetUSD    = 500.0;  // Risk target (account currency)
 input double InpRiskToleranceUSD = 100.0; // Risk tolerance (reporting band only)
 input double InpRiskHardCapUSD   = 1000.0;// Risk hard cap (never exceeded)
 input double InpMaxLots          = 10.0;  // Max lots (0 = only the broker's own ceiling)
@@ -119,7 +163,7 @@ input FpVolumeMode InpVolumeMode    = FP_VOL_AUTO; // VWAP volume source
 //--- 8 · EXECUTION (MT5 only) -------------------------------------------------
 input group "8 · Execution"
 input ulong InpMagicNumber    = 8451207; // Magic number (identifies this EA's positions)
-input ulong InpSlippagePoints = 10;      // Maximum slippage (points)
+input double InpSlippagePoints = 1.0;    // Maximum slippage (index points)
 
 //--- 11 · CHART DISPLAY -------------------------------------------------------
 // Drawn behind the candles, which is how MT5 gives a filled rectangle the
@@ -138,7 +182,11 @@ input bool  InpKeepObjectsOnExit = false;        // Keep the drawings after the 
 
 //--- 10 · DEBUG ---------------------------------------------------------------
 input group "10 · Debug"
-input bool InpVerboseLogging = true;  // Verbose logging (every entry, skip and trail move)
+input bool InpVerboseLogging = false; // Verbose logging (every entry, skip and trail move)
+// WARNING: verbose logging prints a line on almost every bar. In the Strategy
+// Tester's VISUAL mode the journal is rendered live, and that volume of output
+// crashes the terminal under the Mac (Wine) build within seconds. Leave this OFF
+// for visual runs; it is safe for ordinary non-visual backtests.
 
 //--- Runtime ------------------------------------------------------------------
 CFpmrStrategy  g_strategy;
@@ -177,7 +225,11 @@ int OnInit()
 
    FpTradeConfig tcfg;
    tcfg.magic               = InpMagicNumber;
-   tcfg.slippagePoints      = InpSlippagePoints;
+   // The broker counts slippage in ITS points (0.01 on NAS100), so the index
+   // points typed above are converted once here rather than leaving the panel
+   // with one input on a different scale from its neighbours.
+   double symPoint=(g_symbol.point>0.0 ? g_symbol.point : 0.01);
+   tcfg.slippagePoints      = (ulong)MathMax(1.0,MathRound(InpSlippagePoints/symPoint));
    tcfg.riskTargetUsd       = InpRiskTargetUSD;
    tcfg.riskToleranceUsd    = InpRiskToleranceUSD;
    tcfg.riskHardCapUsd      = InpRiskHardCapUSD;
@@ -199,18 +251,23 @@ int OnInit()
    cfg.session1Enabled      = InpSession1Enabled;   cfg.session1Window = InpSession1Window;
    cfg.session2Enabled      = InpSession2Enabled;   cfg.session2Window = InpSession2Window;
    cfg.session3Enabled      = InpSession3Enabled;   cfg.session3Window = InpSession3Window;
+   cfg.session1FpFrom       = InpSession1FpFrom;
+   cfg.session2FpFrom       = InpSession2FpFrom;
+   cfg.session3FpFrom       = InpSession3FpFrom;
 
    cfg.fairPriceSource           = InpFairPriceSource;
    cfg.fairPriceReferenceMinutes = InpFairPriceReferenceMinutes;
    cfg.zonePercent               = InpZonePercent;
    cfg.band1Percent              = InpBand1Percent;
    cfg.band2Percent              = InpBand2Percent;
+   cfg.farBandMode               = InpFarBandMode;
 
    cfg.pivotLeftBars     = InpPivotLeftBars;
    cfg.pivotRightBars    = InpPivotRightBars;
    cfg.breakConfirmation = InpBreakConfirmation;
    cfg.activeLevelMode   = InpActiveLevelMode;
 
+   cfg.entryModel                       = InpEntryModel;
    cfg.rewardRatio                      = InpRewardRatio;
    cfg.maxTradesPerDay                  = InpMaxTradesPerDay;
    cfg.maxTradesPerSession              = InpMaxTradesPerSession;
@@ -219,8 +276,8 @@ int OnInit()
    cfg.maxConcurrentEntriesPerDirection = MathMax(1,InpMaxConcurrentEntriesPerDirection);
    cfg.takeChochEntries                 = InpTakeChochEntries;
    cfg.takeBosEntries                   = InpTakeBosEntries;
-   cfg.stopBufferTicks                  = InpStopBufferTicks;
-   cfg.minStopTicks                     = InpMinStopTicks;
+   cfg.stopBufferPoints                 = InpStopBufferPoints;
+   cfg.minStopPoints                    = InpMinStopPoints;
    cfg.closeAtSessionEnd                = InpCloseAtSessionEnd;
    cfg.minBarsBeforeFirstTrade          = InpMinBarsBeforeFirstTrade;
 
@@ -228,7 +285,8 @@ int OnInit()
    cfg.fixedStopLossPoints   = InpFixedStopLossPoints;
    cfg.fixedTakeProfitPoints = InpFixedTakeProfitPoints;
 
-   cfg.trailMode = InpTrailMode;
+   cfg.trailMode      = InpTrailMode;
+   cfg.reverseMode    = InpReverseMode;
 
    cfg.riskTargetUsd    = InpRiskTargetUSD;
    cfg.riskToleranceUsd = InpRiskToleranceUSD;

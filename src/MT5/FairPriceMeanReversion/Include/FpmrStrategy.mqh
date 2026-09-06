@@ -58,6 +58,9 @@ struct FpmrConfig
    bool              session1Enabled;  string session1Window;
    bool              session2Enabled;  string session2Window;
    bool              session3Enabled;  string session3Window;
+   FpFpInherit       session1FpFrom;
+   FpFpInherit       session2FpFrom;
+   FpFpInherit       session3FpFrom;
 
    //--- 2 Fair Price
    FpSource          fairPriceSource;
@@ -65,6 +68,7 @@ struct FpmrConfig
    double            zonePercent;
    double            band1Percent;
    double            band2Percent;
+   FpFarBandMode     farBandMode;
 
    //--- 3 Market structure
    int               pivotLeftBars;
@@ -73,6 +77,7 @@ struct FpmrConfig
    FpActiveLevelMode activeLevelMode;
 
    //--- 4 Trade management
+   FpEntryModel      entryModel;
    double            rewardRatio;
    int               maxTradesPerDay;
    int               maxTradesPerSession;
@@ -81,8 +86,10 @@ struct FpmrConfig
    int               maxConcurrentEntriesPerDirection;
    bool              takeChochEntries;
    bool              takeBosEntries;
-   double            stopBufferTicks;
-   double            minStopTicks;
+   //--- Distances in INDEX POINTS, the same scale as an MNQ point. Not MT5
+   //    "points" (0.01 here) and not ticks - one unit for the whole panel.
+   double            stopBufferPoints;
+   double            minStopPoints;
    bool              closeAtSessionEnd;
    int               minBarsBeforeFirstTrade;
 
@@ -93,6 +100,9 @@ struct FpmrConfig
 
    //--- 4d Trailing
    FpTrailMode       trailMode;
+
+   //--- 4e Reverse
+   FpReverseMode     reverseMode;
 
    //--- 5 Risk sizing (the manager owns the daily P&L limits; these size a trade)
    double            riskTargetUsd;
@@ -294,10 +304,61 @@ public:
       if(m_trades!=NULL)
          m_trades.SetDayClock(cfg.serverGmtOffsetHours,cfg.serverDst,m_sessionTz);
 
+      // The entry model inverts the direction of every trade, so it is stated
+      // once at load rather than left to be inferred from the entry log.
+      if(cfg.entryModel==FP_ENTRY_BOS_CONTINUATION)
+         Print("FPMR: entry model is BOS CONTINUATION. Above the Fair Price zone only LONGS on a bullish "
+               "BOS, below it only SHORTS on a bearish BOS. Every CHoCH is refused, whatever 'Take CHoCH "
+               "entries' says, and so is any break pointing back toward Fair Price. FAR-band setups exit "
+               "like NEAR ones, because a target at Fair Price sits behind a trade running away from it.");
+
+      if(cfg.reverseMode==FP_REVERSE_SWAP_KEEPSIZE)
+         Print("FPMR WARNING: reverse mode is 'Swap bracket, ORIGINAL size'. Positions are sized for the "
+               "signal's stop but carry the far wider swapped stop, so the money at risk per trade EXCEEDS "
+               "the risk target and the hard cap by the target/stop ratio. This mode exists to reproduce the "
+               "inverse equity curve for analysis - it is not a risk policy. Every entry logs its TRUE RISK.");
+
+      // Say the unit out loud, with this symbol's own money value, so a distance
+      // typed from MNQ experience is never silently a different size here.
+      double exEntry=25313.30;
+      Print(StringFormat("FPMR units: every distance is an INDEX POINT, identical to one MNQ point. "
+                         "A %.0f point stop on a long at %.2f puts the stop at %.2f. "
+                         "Money differs: %s is %.2f per point per lot, MNQ is 2.00 per contract, "
+                         "so that same stop risks %.2f per lot here versus %.2f per contract there.",
+                         cfg.fixedStopLossPoints, exEntry, exEntry-cfg.fixedStopLossPoints,
+                         sym.name, sym.moneyPerPricePerLot,
+                         cfg.fixedStopLossPoints*sym.moneyPerPricePerLot,
+                         cfg.fixedStopLossPoints*2.0));
+
+      // Verbose logging in the tester's VISUAL mode floods the live journal and
+      // takes the terminal down with it on the Wine build. Say so rather than
+      // let it look like the strategy crashed.
+      if(cfg.verboseLogging && (bool)MQLInfoInteger(MQL_TESTER) && (bool)MQLInfoInteger(MQL_VISUAL_MODE))
+         Print("FPMR WARNING: verbose logging is ON in VISUAL mode. This prints on nearly every bar and the "
+               "live journal cannot keep up - the terminal may close itself mid-test. Turn 'Verbose logging' "
+               "off for visual runs.");
+
       m_painter.Init(cfg.paint,sym.digits);
 
       m_structure.Init(cfg.activeLevelMode);
       m_fair.Init(true);   // news Fair Price expiry - inert until phase 6
+      m_fair.SetInheritance((int)cfg.session1FpFrom,(int)cfg.session2FpFrom,(int)cfg.session3FpFrom);
+
+      // A session cannot anchor to itself, and anchoring to a disabled session
+      // would silently stop it trading - both are configuration errors worth
+      // naming rather than discovering from an empty result.
+      int froms[4]; froms[1]=(int)cfg.session1FpFrom; froms[2]=(int)cfg.session2FpFrom; froms[3]=(int)cfg.session3FpFrom;
+      bool on[4];   on[1]=cfg.session1Enabled; on[2]=cfg.session2Enabled; on[3]=cfg.session3Enabled;
+      for(int i=1;i<=3;i++)
+        {
+         if(froms[i]==0 || !on[i]) continue;
+         if(froms[i]==i)
+            Fail(StringFormat("Session %d is set to inherit its own Fair Price.",i));
+         else if(!on[froms[i]])
+            Fail(StringFormat("Session %d inherits session %d's Fair Price, but session %d is disabled, "
+                              "so session %d would never have a reference and would never trade.",
+                              i,froms[i],froms[i],i));
+        }
       m_vwap.Reset();
 
       // Only build what the filter will actually read - an unused EMA is pure
@@ -407,14 +468,17 @@ private:
    void              DetectAndFeedPivots(const int barsAvailable);
    void              EvaluateEntry(const StructureBreak &brk);
    bool              SideAllowed(const int dir);
+   bool              EventAllowed(const FpBreakEvent event);
    bool              EmaOk(const bool isLong);
    bool              VwapOkLong(void);
    bool              VwapOkShort(void);
    void              PaintChart(const SessionEvaluation &ev,const bool isSessionStart);
    void              RecordRejection(const int dir,const FpReject reason,const SizingResult &sizing);
    void              SubmitEntry(const int dir,const FpBreakEvent evt,const double entry,
-                                 const double stop,const double risk,const SizingResult &sizing,
-                                 const FpSetupBand band,const bool useFixed);
+                                 const double stop,const double target,const SizingResult &sizing,
+                                 const FpSetupBand band,const bool useFixed,const int signalDir);
+   double            ComputeTarget(const int dir,const double entry,const double risk,
+                                   const FpSetupBand band,const bool useFixed,bool &targetIsFair);
 
 public:
    string            LastRejectText(void) const { return(m_lastRejectText); }
@@ -429,6 +493,7 @@ public:
 //    500-line ceiling this repository works to.
 #include "FpmrStrategyImpl.mqh"
 #include "FpmrStrategyFilters.mqh"
+#include "FpmrStrategyPaint.mqh"
 
 #endif // FPMR_STRATEGY_MQH
 //+------------------------------------------------------------------+

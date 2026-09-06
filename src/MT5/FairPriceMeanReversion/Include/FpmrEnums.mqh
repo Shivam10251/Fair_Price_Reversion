@@ -62,6 +62,54 @@ enum FpSetupBand
    FP_BAND_BEYOND = 3
   };
 
+//--- Where a session gets its Fair Price from --------------------------------
+//  Own : the session's own first reference candle - the original rule.
+//  S1/S2/S3 : the session INHERITS the Fair Price another session established
+//  earlier on the same trading day, so it is measured against that session's
+//  opening reference rather than its own. If the source session never set one
+//  that day the inheriting session gets NO Fair Price and therefore does not
+//  trade, which keeps the anchor honest instead of quietly substituting one.
+enum FpFpInherit
+  {
+   FP_FP_OWN = 0, // Own first candle
+   FP_FP_S1  = 1, // Inherit session 1's Fair Price
+   FP_FP_S2  = 2, // Inherit session 2's Fair Price
+   FP_FP_S3  = 3  // Inherit session 3's Fair Price
+  };
+
+//--- What to do with a setup that lands in the FAR band ----------------------
+//  FairPrice : take it and target Fair Price itself - the full reversion. This
+//              is the original behaviour, and the reason the target can end up
+//              a very long way from the entry.
+//  NearExit  : take it, but exit it the way a NEAR setup exits - the fixed
+//              stop and target, or the Band 1 R:R multiple. The entry gating is
+//              unchanged; only the exit stops chasing Fair Price.
+//  Disabled  : do not trade past Band 1 at all. Everything beyond it is
+//              rejected as TOO FAR, exactly like a setup past Band 2.
+enum FpFarBandMode
+  {
+   FP_FAR_FAIR_PRICE = 0, // Fair Price target - revert the whole way (original)
+   FP_FAR_NEAR_EXIT  = 1, // Trade it, but exit like a NEAR setup
+   FP_FAR_DISABLED   = 2  // Do not trade past Band 1 at all
+  };
+
+//--- Which side of the Fair Price zone a break is allowed to trade -----------
+//  Reversion      : the original model. Above the zone only SHORTS, below it
+//                   only LONGS, so every trade heads back toward Fair Price.
+//                   Both BOS and CHoCH are eligible, per their own switches.
+//  BosContinuation: the inverse. Above the zone only LONGS on a BULLISH BOS,
+//                   below it only SHORTS on a BEARISH BOS - the move away from
+//                   Fair Price is traded rather than faded. Every CHoCH is
+//                   refused in this model, and so is any break pointing back
+//                   toward Fair Price, whatever "Take CHoCH entries" says.
+//                   The FAR band cannot target Fair Price here (the trade runs
+//                   the other way), so a FAR setup exits like a NEAR one.
+enum FpEntryModel
+  {
+   FP_ENTRY_REVERSION        = 0, // Reversion - fade back toward Fair Price (original)
+   FP_ENTRY_BOS_CONTINUATION = 1  // BOS continuation - trade away from Fair Price, BOS only
+  };
+
 //--- Trailing-stop behaviour for percentage-band setups (Near and Far) --------
 //  Off       : the stop stays where it was placed at entry.
 //  RStep     : whole-R ratchet - at +1R the stop moves to breakeven, at +2R to
@@ -73,6 +121,32 @@ enum FpTrailMode
    FP_TRAIL_OFF       = 0, // Off - stop stays at entry
    FP_TRAIL_RSTEP     = 1, // R-step - whole-R ratchet
    FP_TRAIL_STRUCTURE = 2  // Structure - trails confirmed swings
+  };
+
+//--- How, if at all, a setup is inverted before it reaches the broker ---------
+//  Off    : trade the setup as signalled.
+//  Mirror : opposite side, stop and target MIRRORED about the entry, so both
+//           distances - and therefore the sized risk and the R multiple - are
+//           unchanged. The reversed trade still has a near stop and a far
+//           target, so it can lose the same setup the original lost.
+//  Swap   : opposite side with the stop and target LEVELS exchanged. This is
+//           the true P&L inverse: the reversed trade loses exactly when the
+//           original would have won, so the two win rates sum to 100%. Note
+//           the risk distance changes, so the position is re-sized on it -
+//           which means the MONEY does not mirror, only the outcomes.
+//  SwapKeepSize : as Swap, but the position keeps the size the ORIGINAL setup
+//           would have taken, so the P&L mirrors in dollars too. This is the
+//           only mode that reproduces the inverse equity curve, and it does so
+//           by DELIBERATELY BREACHING the risk cap: the stop is now the old
+//           target distance while the lots were sized for the old stop, so the
+//           money at risk per trade is multiplied by target/stop. Diagnostic
+//           tool, not a risk policy.
+enum FpReverseMode
+  {
+   FP_REVERSE_OFF    = 0, // Off - trade the setup as signalled
+   FP_REVERSE_MIRROR = 1, // Mirror bracket - opposite side, same SL and TP distances
+   FP_REVERSE_SWAP   = 2, // Swap bracket - opposite side, SL and TP exchanged (true inverse)
+   FP_REVERSE_SWAP_KEEPSIZE = 3 // Swap bracket, ORIGINAL size - true P&L mirror, IGNORES the risk cap
   };
 
 //--- Impact rating as parsed from the calendar file ---------------------------
