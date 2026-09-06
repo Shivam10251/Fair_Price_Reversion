@@ -37,9 +37,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[Display(Name = "No entries after (HHMM)", Description = "Hard cutoff for NEW entries, in the session timezone. Entries begin as soon as the range session has closed and RH/RL exist, so there is no separate start time. An open trade is still managed after the cutoff.", GroupName = G_GEN, Order = 2)]
 		public string EntryCutoff { get; set; }
 
+		// The first level to be swept owns the day. See EvaluateSetups.
+		[NinjaScriptProperty]
+		[Display(Name = "One level per day", Description = "ON: the FIRST of VAH / VAL / RH / RL to be swept claims the day. The other three are dead for the rest of it, whether or not a setup ever forms at the claimed one — and once that level produces a trade, the day is finished. OFF: every level stays live all day, subject only to the caps below.", GroupName = G_GEN, Order = 3)]
+		public bool OneLevelPerDay { get; set; }
+
 		[NinjaScriptProperty]
 		[Range(0, int.MaxValue)]
-		[Display(Name = "Max trades per day", Description = "0 = unlimited.", GroupName = G_GEN, Order = 4)]
+		[Display(Name = "Max trades per day", Description = "0 = unlimited. With 'One level per day' on this is a second ceiling, not the primary one.", GroupName = G_GEN, Order = 4)]
 		public int MaxTradesPerDay { get; set; }
 
 		[NinjaScriptProperty]
@@ -173,6 +178,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			EnableLongs     = true;
 			EnableShorts    = true;
 			EntryCutoff     = "1500";
+			OneLevelPerDay  = true;
 			MaxTradesPerDay = 0;
 			OneTradeAtATime = true;
 

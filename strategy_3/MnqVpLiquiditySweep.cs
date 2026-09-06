@@ -6,6 +6,9 @@
 //                               back BELOW the swept level. Short.
 //  LOW-SIDE SWEEP  -> LONG      VAL or RL swept, then a GREEN candle that closes
 //                               back ABOVE the swept level. Long.
+//  ONE LEVEL PER DAY            The FIRST of the four tradeable levels to be swept
+//                               claims the day. The other three are dead from that
+//                               moment, and the claimed one gets a single trade.
 //  TARGET IS DYNAMIC            The farthest qualifying opposite-side level from
 //                               the actual entry price. Never a fixed R.
 //  BREAK-EVEN                   Any OTHER indicator line between entry and
@@ -102,6 +105,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private int      _tradesDay;
 		private int      _tradeSeq;
 
+		/// <summary>
+		/// The level that owns today, or None while the day is still open to all four.
+		/// Set by the first fresh sweep of any tradeable level and never reassigned
+		/// until the day rolls or the next range session closes.
+		/// </summary>
+		private VpsLevel _claimedLevel = VpsLevel.None;
+
+		/// <summary>True once the claimed level has produced its one trade.</summary>
+		private bool     _dayTradeTaken;
+
 		// Diagnostics.
 		// A strategy with several stacked preconditions can produce zero trades for a
 		// dozen different reasons, and "nothing happened" is the least useful possible
@@ -113,7 +126,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private int _diagRangePublished;
 		private int _diagBarsWithLevels, _diagBarsEntryAllowed;
 		private int _diagSweeps, _diagConfirmations, _diagEntries;
-		private int _diagSkipWindow, _diagSkipDayCap, _diagSkipInTrade;
+		private int _diagSkipWindow, _diagSkipDayCap, _diagSkipInTrade, _diagSkipDayDone;
 		private int _diagSkipNoTarget, _diagSkipRisk, _diagSkipSize;
 
 		protected override void OnStateChange()
@@ -192,6 +205,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			{
 				_tradingDay = day;
 				_tradesDay  = 0;
+				ReleaseDayClaim();
 			}
 
 			// 3. Manage the open trade before looking for a new one — break-even must
@@ -356,10 +370,22 @@ namespace NinjaTrader.NinjaScript.Strategies
 		/// chart is given one line and one label per level anchored to this bar.
 		/// Nothing may change any of it until the next range session closes.
 		/// </summary>
+		/// <summary>
+		/// Reopens the day to all four levels. Called when the trading day rolls and
+		/// again at the range close, because a new set of frozen levels is a new day's
+		/// worth of opportunity regardless of what the calendar says.
+		/// </summary>
+		private void ReleaseDayClaim()
+		{
+			_claimedLevel  = VpsLevel.None;
+			_dayTradeTaken = false;
+		}
+
 		private void FreezeLevels()
 		{
 			_frozen.CopyFrom(_levels);
 			_sweeps.Reset();
+			ReleaseDayClaim();
 
 			_freezeOccurrence = _rangeOccurrence;
 			_freezeTime       = Time[0];
@@ -407,18 +433,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 			  + "    outside entry window       {11}\n"
 			  + "    daily trade cap            {12}\n"
 			  + "    a trade already open       {13}\n"
-			  + "    no valid opposite target   {14}\n"
-			  + "    stop under one tick        {15}\n"
-			  + "    sizing                     {16}\n"
-			  + "  fill resolution {17}\n"
-			  + "{18}"
+			  + "    the day was already traded {14}\n"
+			  + "    no valid opposite target   {15}\n"
+			  + "    stop under one tick        {16}\n"
+			  + "    sizing                     {17}\n"
+			  + "  fill resolution {18}\n"
+			  + "{19}"
 			  + "=====================================",
 				_diagBars,
 				_diagBarsInProfile, _diagProfilePublished, _diagProfileFailed,
 				_diagBarsInRange, _diagRangePublished,
 				_diagBarsWithLevels, _diagBarsEntryAllowed,
 				_diagSweeps, _diagConfirmations, _diagEntries,
-				_diagSkipWindow, _diagSkipDayCap, _diagSkipInTrade,
+				_diagSkipWindow, _diagSkipDayCap, _diagSkipInTrade, _diagSkipDayDone,
 				_diagSkipNoTarget, _diagSkipRisk, _diagSkipSize,
 				UseTickPrecision ? "High (1 tick)" : "Standard",
 				FirstBlockedStage()));

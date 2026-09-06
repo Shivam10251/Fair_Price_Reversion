@@ -96,6 +96,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_tradingDay        = DateTime.MinValue;
 			_tradesDay         = 0;
 			_tradeSeq          = 0;
+			_claimedLevel      = VpsLevel.None;
+			_dayTradeTaken     = false;
 
 			ResetTrade();
 

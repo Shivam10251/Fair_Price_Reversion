@@ -37,7 +37,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 	public partial class MnqVpLiquiditySweep : Strategy
 	{
 		// ── Active trade ──────────────────────────────────────────────────────────
-		private bool     _gateWindow, _gateDayCap, _gateFlat;
+		private bool     _gateWindow, _gateDayCap, _gateFlat, _gateDayDone;
 		private string   _activeSignal = string.Empty;
 		private int      _activeDirection;
 		private VpsLevel _entryLine;
@@ -64,11 +64,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 			// A sweep is detected regardless of the trading window so the state
 			// machine stays continuous; only the ENTRY is gated by the window.
 			// The three gates are kept separate so a barren run can name which one bit.
-			_gateWindow = InTradingWindow(barOpenInBarZone);
-			_gateDayCap = MaxTradesPerDay == 0 || _tradesDay < MaxTradesPerDay;
-			_gateFlat   = !OneTradeAtATime || (!_inTrade && Position.MarketPosition == MarketPosition.Flat);
+			_gateWindow  = InTradingWindow(barOpenInBarZone);
+			_gateDayCap  = MaxTradesPerDay == 0 || _tradesDay < MaxTradesPerDay;
+			_gateFlat    = !OneTradeAtATime || (!_inTrade && Position.MarketPosition == MarketPosition.Flat);
+			_gateDayDone = !OneLevelPerDay || !_dayTradeTaken;
 
-			bool canEnter = _gateWindow && _gateDayCap && _gateFlat;
+			bool canEnter = _gateWindow && _gateDayCap && _gateFlat && _gateDayDone;
 
 			if (canEnter)
 				_diagBarsEntryAllowed++;
@@ -94,6 +95,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 			if (!_frozen.IsValid(level))
 				return false;
 
+			// ONE LEVEL PER DAY
+			// Once a level has been swept it owns the rest of the day, so every other
+			// level is refused here — before its sweep is even looked for. That is the
+			// point of the rule: the day commits to the first level price went for, and
+			// waits there, rather than taking whichever setup happens to complete first.
+			if (OneLevelPerDay && _claimedLevel != VpsLevel.None && _claimedLevel != level)
+				return false;
+
 			double levelPrice = _frozen.PriceOf(level);
 
 			VpsArmedSweep fresh = _sweeps.DetectSweep(level, direction, levelPrice,
@@ -101,6 +110,21 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			if (fresh != null)
 				_diagSweeps++;
+
+			// The CLAIM is made on the sweep itself, not on a confirmation and not on a
+			// fill. Whether this sweep goes on to produce a trade is irrelevant — the
+			// other three levels are finished for the day either way.
+			//
+			// Only levels the strategy is actually allowed to trade can claim: a side or
+			// a level group switched off is not in play, so it cannot spend the day.
+			if (fresh != null && OneLevelPerDay && _claimedLevel == VpsLevel.None)
+			{
+				_claimedLevel = level;
+
+				Print(string.Format(CultureInfo.InvariantCulture,
+					"{0}  DAY CLAIMED BY {1} at {2} — VAH/VAL/RH/RL other than {1} are now closed for the day.",
+					Time[0], level, levelPrice.ToString(_tickFormat, CultureInfo.InvariantCulture)));
+			}
 
 			if (fresh != null && VerboseLogging)
 				Print(string.Format(CultureInfo.InvariantCulture,
@@ -147,9 +171,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			if (!canEnter)
 			{
-				if      (!_gateWindow) _diagSkipWindow++;
-				else if (!_gateDayCap) _diagSkipDayCap++;
-				else                   _diagSkipInTrade++;
+				if      (!_gateWindow)  _diagSkipWindow++;
+				else if (!_gateDayCap)  _diagSkipDayCap++;
+				else if (!_gateDayDone) _diagSkipDayDone++;
+				else                    _diagSkipInTrade++;
 
 				if (VerboseLogging)
 					Print(string.Format(CultureInfo.InvariantCulture,
@@ -157,6 +182,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 						Time[0], armed.Level, how,
 						!_gateWindow ? "outside the entry window"
 						: !_gateDayCap ? "the daily trade cap is reached"
+						: !_gateDayDone ? "this day's one trade has already been taken"
 						: "a trade is already open"));
 				return false;
 			}
@@ -246,6 +272,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 				EnterLong(quantity, signal);
 
 			_tradesDay++;
+
+			// One trade per day: the claimed level has now had its turn.
+			_dayTradeTaken = true;
 
 			string names = string.Empty;
 			for (int i = 0; i < _intermediates.Count; i++)

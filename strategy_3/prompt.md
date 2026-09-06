@@ -40,6 +40,31 @@ Every sweep test, every target selection and every break-even line for the whole
 trading window is therefore measured against exactly the numbers that existed the
 moment the window opened.
 
+## ONE LEVEL PER DAY
+
+The four tradeable levels do not compete. The **first** of VAH, VAL, RH or RL to
+be swept **claims the day**, and the other three are closed from that moment.
+
+* The claim is made on the **sweep itself** — not on a confirmation, and not on a
+  fill. Whether that sweep goes on to produce a trade is irrelevant; the other
+  three levels are finished either way.
+* The strategy then **waits at the claimed level only**. If no rejection candle
+  ever confirms there, the day simply produces no trade. It does not fall back to
+  another level.
+* Once the claimed level produces a trade, **the day is over.** A second sweep of
+  the same level does not trade again.
+* Only levels the strategy is actually allowed to trade can claim one. A side or a
+  level group that is switched off is not in play, so it cannot spend the day.
+* When two levels are swept by the same candle, the documented evaluation order
+  decides: high side before low side, and within a side the value area before the
+  range.
+
+The claim is released when the day rolls, and again at the range close, because a
+new set of fixed levels is a fresh day's opportunity.
+
+This is a user option. With it off, all four levels stay live all day and only the
+trade caps limit activity.
+
 ## The trading window
 
 Entries are permitted from the range-session close until a user-configured
@@ -657,6 +682,12 @@ The most important logic is:
 
 All five levels are committed when the range session ends and cannot move until
 the next range close. Trading runs from that close to the user's cutoff time.
+
+**ONE LEVEL PER DAY**
+
+The first of VAH / VAL / RH / RL to be swept claims the day; the other three close
+immediately, setup or no setup. The claimed level gets one trade, and then the day
+is done.
 
 **HIGH-SIDE SWEEP → SHORT**
 
