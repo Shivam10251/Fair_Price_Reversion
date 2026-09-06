@@ -137,7 +137,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			_structure = new StructureEngine(ActiveLevelMode);
 			_fair      = new FairPriceEngine();
-			_xtp       = new ExtendedTpEngine(UseExtendedTp, ExtendedTpTriggerPercent, ExtendedTpTradeCount, ExtendedTpMode);
+			_xtp       = new ExtendedTpEngine(UseExtendedTp, ExtendedTpTriggerPercent, ExtendedTpMode);
 			_vwap      = new SessionVwap();
 
 			// Only construct what the filter will actually read — an unused EMA is pure

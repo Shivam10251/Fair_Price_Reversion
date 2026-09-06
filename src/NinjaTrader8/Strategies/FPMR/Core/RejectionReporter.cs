@@ -33,9 +33,10 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public bool SessionCapOk;
 		public bool FlatOk;
 		public bool EventOk;
+		public bool XtpBosOk;    // extended-move setup armed: this break is a BOS running its way
 		public bool EmaOk;
 		public bool VwapOk;
-		public bool RiskOk;      // risk > 0 and >= minimum stop distance
+		public bool RiskOk;      // risk > 0
 		public bool RiskCapOk;   // sizing produced at least one contract within the hard cap
 		public bool Reconciled;  // strategy is not stuck on an unmatched restart position
 	}
@@ -57,6 +58,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			if (!g.SessionCapOk) return FpReject.SessionCap;
 			if (!g.FlatOk)       return FpReject.InTrade;
 			if (!g.EventOk)      return FpReject.EventOff;
+			if (!g.XtpBosOk)     return FpReject.XtpBosOnly;
 			if (!g.EmaOk)        return FpReject.Ema;
 			if (!g.VwapOk)       return FpReject.Vwap;
 			if (!g.RiskOk)       return FpReject.Risk;
@@ -82,6 +84,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				case FpReject.SessionCap:   return "SESS CAP";
 				case FpReject.InTrade:      return "IN TRADE";
 				case FpReject.EventOff:     return "EVT OFF";
+				case FpReject.XtpBosOnly:   return "XTP BOS ONLY";
 				case FpReject.Ema:          return "EMA";
 				case FpReject.Vwap:         return "VWAP";
 				case FpReject.Risk:         return "RISK";

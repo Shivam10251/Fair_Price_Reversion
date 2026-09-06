@@ -43,11 +43,32 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			int    dir   = brk.Direction;
 			double entry = Close[0];
-			double stop  = dir < 0
+
+			// The stop belongs to the displacement candle's extreme.
+			double stop = dir < 0
 				? Instrument.MasterInstrument.RoundToTickSize(High[0] + StopBufferTicks * _tickSize)
 				: Instrument.MasterInstrument.RoundToTickSize(Low[0]  - StopBufferTicks * _tickSize);
 
 			double risk = dir < 0 ? stop - entry : entry - stop;
+
+			// TIGHT-CANDLE FALLBACK
+			// A displacement candle can close so near its own extreme that the stop it
+			// implies is a few ticks, which sizes into an absurd position and is taken
+			// out by noise. Where that happens, the candle stop is replaced by a fixed
+			// distance rather than the setup being discarded. The take profit is not set
+			// here: it falls out of the usual Risk/Reward ratio applied to this new risk,
+			// so a fallback trade keeps the same R:R as every other trade.
+			bool fallbackStop = false;
+
+			if (UseTightStopFallback && risk < TightStopThresholdPoints)
+			{
+				stop = Instrument.MasterInstrument.RoundToTickSize(
+					dir < 0 ? entry + FallbackStopPoints : entry - FallbackStopPoints);
+
+				// Re-derived after rounding, so risk and stop can never disagree.
+				risk         = dir < 0 ? stop - entry : entry - stop;
+				fallbackStop = true;
+			}
 
 			SizingResult sizing = RiskSizer.Size(entry, stop, _pointValue,
 				RiskTargetUSD, RiskToleranceUSD, RiskHardCapUSD, MaxContracts);
@@ -66,10 +87,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 				DayCapOk     = MaxTradesPerDay     == 0 || _tradesDay     < MaxTradesPerDay,
 				SessionCapOk = MaxTradesPerSession == 0 || _tradesSession < MaxTradesPerSession,
 				FlatOk       = !OnlyOneOpenTrade || (_openTrades.Count == 0 && Position.MarketPosition == MarketPosition.Flat),
-				EventOk      = brk.Event == FpBreakEvent.CHoCH ? TakeChochEntries : TakeBosEntries,
+				// While the extended-move setup is armed its own rule replaces the CHoCH /
+				// BOS switches entirely — see XtpBosOk. Idle, the switches apply as normal.
+				EventOk      = _xtp.Armed || (brk.Event == FpBreakEvent.CHoCH ? TakeChochEntries : TakeBosEntries),
+				XtpBosOk     = !_xtp.Armed || (brk.Event == FpBreakEvent.BOS && dir == _xtp.ArmedDirection),
 				EmaOk        = dir < 0 ? EmaOkShort() : EmaOkLong(),
 				VwapOk       = dir < 0 ? VwapOkShort() : VwapOkLong(),
-				RiskOk       = risk > 0 && risk >= MinStopTicks * _tickSize,
+				RiskOk       = risk > 0,
 				RiskCapOk    = sizing.Accepted
 			};
 
@@ -81,7 +105,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				return;
 			}
 
-			SubmitEntry(dir, brk.Event, entry, stop, risk, sizing);
+			SubmitEntry(dir, brk.Event, entry, stop, risk, sizing, fallbackStop);
 		}
 
 		/// <summary>
@@ -318,7 +342,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 				Time[0].ToString("yyyy-MM-dd HH:mm:ss"), label, dir < 0 ? "bearish" : "bullish", extra));
 		}
 
-		private void SubmitEntry(int dir, FpBreakEvent evt, double entry, double stop, double risk, SizingResult sizing)
+		private void SubmitEntry(int dir, FpBreakEvent evt, double entry, double stop, double risk, SizingResult sizing,
+		                         bool fallbackStop)
 		{
 			ExtendedTpResult tpResult = _xtp.ComputeTakeProfit(dir, entry, risk, RewardRatio,
 				_fairPrice, _hasFair, _xtpOffset, _tickSize);
@@ -348,6 +373,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				TargetPrice    = target,
 				Quantity       = sizing.Quantity,
 				ExtendedTpUsed = tpResult.OverrideUsed,
+				FallbackStopUsed = fallbackStop,
 				EntryBarIndex  = CurrentBar,
 				EntryBarTime   = Time[0],
 				SessionIndex   = _effSession,
@@ -363,8 +389,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 			else
 				EnterLong(sizing.Quantity, signal);
 
-			if (tpResult.OverrideUsed)
-				_xtp.Consume();
+			// Nothing is consumed here. The extended-move setup is not a budget of trades;
+			// it ends only when price closes back through Fair Price - see ExtendedTpEngine.
 
 			_trades[signal] = rec;
 			_openTrades.Add(rec);

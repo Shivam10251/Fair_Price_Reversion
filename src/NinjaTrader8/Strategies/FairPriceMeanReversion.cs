@@ -216,7 +216,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 			double breakDown = BreakConfirmation == FpBreakConfirm.Close ? Close[0] : Low[0];
 			StructureBreak brk = _structure.DetectBreak(breakUp, breakDown, CurrentBar);
 
-			_xtp.OnBar(Close[0], _fairPrice, _hasFair);
+			// The extended-move setup is stepped BEFORE entry evaluation, because the
+			// entry gate reads the armed state it produces on this same bar.
+			FpXtpTransition xtpMoved = _xtp.OnBar(Close[0], _fairPrice, _hasFair);
+
+			if (xtpMoved != FpXtpTransition.None && (VerboseLogging || xtpMoved == FpXtpTransition.Armed))
+				Print(string.Format(CultureInfo.InvariantCulture,
+					"{0}  EXTENDED-MOVE {1} | {2} | FP {3:0.#####}",
+					Time[0].ToString("yyyy-MM-dd HH:mm:ss"),
+					xtpMoved == FpXtpTransition.Armed ? "ARMED" : "INVALIDATED (price closed back through Fair Price)",
+					_xtp.Describe(), _fairPrice));
 
 			if (brk.Occurred)
 				EvaluateEntry(brk);

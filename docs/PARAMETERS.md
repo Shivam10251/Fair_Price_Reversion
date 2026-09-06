@@ -49,20 +49,37 @@ user-editable from the strategy dialog.
 | Take CHoCH entries | `true` | |
 | Take BOS entries | `true` | |
 | SL buffer (ticks) | `0` | Extra ticks beyond the displacement candle's extreme. |
-| Minimum stop distance (ticks) | `0` | 0 = off. Tighter displacement candles are rejected with `RISK`. |
+| Use fallback SL on tight candles | `false` | Replaces the displacement candle's stop with a fixed distance instead of skipping the trade. |
+| Fallback when candle stop is under (points) | `5` | Measured entry → candle extreme, including the SL buffer. |
+| Fallback SL distance (points) | `10` | The stop used instead. TP is this × the Risk/Reward ratio, so R:R is unchanged. |
 | Close trades at session end | `false` | |
 | Min bars before first trade | `3` | Warm-up after the trading start point. Structure and Fair Price still run; only entries are blocked. |
 | Same-candle TP/SL report | `SlFirst` | Reporting only. The real fill comes from the order fill resolution. |
 
-## 4b · Extended-move TP override
+## 4b · Extended-move setup
+
+Once price has stretched X% from Fair Price the move is treated as over-extended.
+While the setup is **armed**, two things change:
+
+1. **Only a BOS running back toward Fair Price may open a trade.** A CHoCH may not,
+   and the *Take CHoCH / Take BOS* switches above do not apply — this rule replaces them.
+2. That trade **targets Fair Price** rather than the RR multiple.
+
+It stays armed through any number of trades, and ends only when price **closes on the
+far side of Fair Price** (the reversion has happened), at session start, or if Fair
+Price is lost. There is no trade counter.
+
+With the feature off, entries and targets behave exactly as they do elsewhere.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| Enable extended-move TP override | `false` | |
+| Enable extended-move setup | `false` | |
 | Trigger: distance from Fair Price (%) | `0.5` | Percentage of Fair Price. At FP 29,300 that is 146.5 points. |
-| Y — trades to apply it to | `1` | Counter refills to Y on every bar price is still beyond the trigger; resets to 0 at session start. |
-| TP target while active | `FairPriceAlways` | Or `NearerOfTheTwo` / `FartherOfTheTwo`, compared against the RR target. |
+| TP target while armed | `FairPriceAlways` | Or `NearerOfTheTwo` / `FartherOfTheTwo`, compared against the RR target. |
 | TP offset from Fair Price | `0` | Same unit as the zone distance. Pulls the target back toward the entry. |
+
+Rejection code `XTP BOS ONLY` means the setup was armed and the break was a CHoCH, or
+a BOS running the wrong way.
 
 ## 5 · Risk Sizing *(new — not in the Pine version)*
 

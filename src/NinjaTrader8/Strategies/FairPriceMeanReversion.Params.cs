@@ -150,27 +150,43 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[Display(Name = "SL buffer (ticks)", Description = "Extra ticks beyond the displacement candle's extreme.", GroupName = G_TM, Order = 8)]
 		public double StopBufferTicks { get; set; }
 
+		// A displacement candle can be so small that its own extreme is a useless stop.
+		// Rather than throw the setup away, substitute a fixed stop distance and let the
+		// usual Risk/Reward ratio size the target from it.
 		[NinjaScriptProperty]
-		[Range(0.0, double.MaxValue)]
-		[Display(Name = "Minimum stop distance (ticks)", Description = "0 = off. Displacement candles tighter than this are rejected with RISK.", GroupName = G_TM, Order = 9)]
-		public double MinStopTicks { get; set; }
+		[Display(Name = "Use fallback SL on tight candles", Description = "When the displacement candle's own stop is tighter than the threshold below, replace it with a fixed distance instead of skipping the trade.", GroupName = G_TM, Order = 9)]
+		public bool UseTightStopFallback { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Close trades at session end", GroupName = G_TM, Order = 10)]
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Fallback when candle stop is under (points)", Description = "Measured from the entry to the displacement candle's extreme, including the SL buffer.", GroupName = G_TM, Order = 10)]
+		public double TightStopThresholdPoints { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Fallback SL distance (points)", Description = "The stop used instead. The take profit is this distance multiplied by the Risk / Reward ratio, so a fallback trade keeps the same R:R as every other trade.", GroupName = G_TM, Order = 11)]
+		public double FallbackStopPoints { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Close trades at session end", GroupName = G_TM, Order = 12)]
 		public bool CloseAtSessionEnd { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0, 1000)]
-		[Display(Name = "Min bars before first trade", Description = "Warm-up after the trading start point. Structure and Fair Price still run; only entries are blocked.", GroupName = G_TM, Order = 11)]
+		[Display(Name = "Min bars before first trade", Description = "Warm-up after the trading start point. Structure and Fair Price still run; only entries are blocked.", GroupName = G_TM, Order = 13)]
 		public int MinBarsBeforeFirstTrade { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Same-candle TP/SL report", Description = "Reporting only. The real fill comes from the order fill resolution.", GroupName = G_TM, Order = 12)]
+		[Display(Name = "Same-candle TP/SL report", Description = "Reporting only. The real fill comes from the order fill resolution.", GroupName = G_TM, Order = 14)]
 		public FpSameBarPriority SameBarPriority { get; set; }
 
-		// ── 4b · EXTENDED-MOVE TP OVERRIDE ────────────────────────────────────────
+		// ── 4b · EXTENDED-MOVE SETUP ──────────────────────────────────────────────
+		// Price stretched X% from Fair Price is treated as over-extended. While that
+		// state is ARMED the strategy waits for a BOS running back toward Fair Price —
+		// a CHoCH will not do — and targets Fair Price itself. It stays armed through
+		// any number of trades until price closes on the far side of Fair Price.
 		[NinjaScriptProperty]
-		[Display(Name = "Enable extended-move TP override", GroupName = G_XTP, Order = 0)]
+		[Display(Name = "Enable extended-move setup", Description = "Off: entries and targets behave normally. On: once price is X% from Fair Price, only a BOS back toward Fair Price may enter, and it targets Fair Price.", GroupName = G_XTP, Order = 0)]
 		public bool UseExtendedTp { get; set; }
 
 		[NinjaScriptProperty]
@@ -179,12 +195,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public double ExtendedTpTriggerPercent { get; set; }
 
 		[NinjaScriptProperty]
-		[Range(1, int.MaxValue)]
-		[Display(Name = "Y — trades to apply it to", Description = "Refills to Y on every bar price is still beyond the trigger; resets to 0 at session start.", GroupName = G_XTP, Order = 2)]
-		public int ExtendedTpTradeCount { get; set; }
-
-		[NinjaScriptProperty]
-		[Display(Name = "TP target while active", GroupName = G_XTP, Order = 3)]
+		[Display(Name = "TP target while armed", GroupName = G_XTP, Order = 3)]
 		public FpExtendedTpMode ExtendedTpMode { get; set; }
 
 		[NinjaScriptProperty]
@@ -394,14 +405,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 			TakeChochEntries                 = true;
 			TakeBosEntries                   = true;
 			StopBufferTicks                  = 0.0;
-			MinStopTicks                     = 0.0;
+			UseTightStopFallback             = false;
+			TightStopThresholdPoints         = 5.0;
+			FallbackStopPoints               = 10.0;
 			CloseAtSessionEnd                = false;
 			MinBarsBeforeFirstTrade          = 3;
 			SameBarPriority                  = FpSameBarPriority.SlFirst;
 
 			UseExtendedTp            = false;
 			ExtendedTpTriggerPercent = 0.5;
-			ExtendedTpTradeCount     = 1;
 			ExtendedTpMode           = FpExtendedTpMode.FairPriceAlways;
 			ExtendedTpOffset         = 0.0;
 

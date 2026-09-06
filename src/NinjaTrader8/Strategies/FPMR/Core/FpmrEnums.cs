@@ -95,9 +95,10 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		SessionCap,  // max trades per session reached
 		InTrade,     // a trade is open and "one at a time" is on
 		EventOff,    // CHoCH or BOS entries disabled for this event type
+		XtpBosOnly,  // extended-move setup is armed: only a BOS its way may enter
 		Ema,         // EMA filter rejected it
 		Vwap,        // VWAP filter rejected it
-		Risk,        // risk <= 0 or below the minimum stop distance
+		Risk,        // risk <= 0, or the bracket could not be built
 		RiskCap,     // one contract would risk more than RiskHardCapUSD
 		Unreconciled // strategy restarted into an un-matched live position
 	}

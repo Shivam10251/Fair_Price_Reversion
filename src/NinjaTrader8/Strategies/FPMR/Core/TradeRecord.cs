@@ -20,6 +20,8 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public double   TargetPrice;
 		public int      Quantity;
 		public bool     ExtendedTpUsed;
+		/// <summary>The displacement candle's stop was too tight, so the fallback distance was used.</summary>
+		public bool     FallbackStopUsed;
 
 		public int      EntryBarIndex;
 		public DateTime EntryBarTime;
@@ -76,7 +78,8 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				SignalPrice,
 				StopPrice,
 				TargetPrice,
-				ExtendedTpUsed ? " | FP-target" : string.Empty);
+				(ExtendedTpUsed ? " | FP-target" : string.Empty)
+			  + (FallbackStopUsed ? " | fallback SL" : string.Empty));
 		}
 	}
 }
