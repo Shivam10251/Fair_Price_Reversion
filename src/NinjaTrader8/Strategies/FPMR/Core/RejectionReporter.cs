@@ -26,6 +26,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public bool NewsReady;    // no news surprise is still waiting for its consolidation
 		public bool WarmupDone;
 		public bool InZone;
+		public bool DistanceOk;  // entry is not beyond Band 2 (too far from Fair Price)
 		public bool SideOk;
 		public bool DailyLossOk;   // realised loss for the day is inside the limit
 		public bool DailyProfitOk; // realised profit for the day is inside the limit
@@ -33,10 +34,9 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public bool SessionCapOk;
 		public bool FlatOk;
 		public bool EventOk;
-		public bool XtpBosOk;    // extended-move setup armed: this break is a BOS running its way
 		public bool EmaOk;
 		public bool VwapOk;
-		public bool RiskOk;      // risk > 0
+		public bool RiskOk;      // risk > 0 and >= minimum stop distance
 		public bool RiskCapOk;   // sizing produced at least one contract within the hard cap
 		public bool Reconciled;  // strategy is not stuck on an unmatched restart position
 	}
@@ -51,6 +51,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			if (!g.NewsReady)    return FpReject.NewsWait;
 			if (!g.WarmupDone)   return FpReject.Warmup;
 			if (g.InZone)        return FpReject.InZone;
+			if (!g.DistanceOk)   return FpReject.TooFar;
 			if (!g.SideOk)       return FpReject.Side;
 			if (!g.DailyLossOk)  return FpReject.DailyLoss;
 			if (!g.DailyProfitOk)return FpReject.DailyProfit;
@@ -58,7 +59,6 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			if (!g.SessionCapOk) return FpReject.SessionCap;
 			if (!g.FlatOk)       return FpReject.InTrade;
 			if (!g.EventOk)      return FpReject.EventOff;
-			if (!g.XtpBosOk)     return FpReject.XtpBosOnly;
 			if (!g.EmaOk)        return FpReject.Ema;
 			if (!g.VwapOk)       return FpReject.Vwap;
 			if (!g.RiskOk)       return FpReject.Risk;
@@ -79,12 +79,12 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				case FpReject.DailyProfit:  return "DAY PROFIT LIMIT";
 				case FpReject.Warmup:       return "WARMUP";
 				case FpReject.InZone:       return "IN ZONE";
+				case FpReject.TooFar:       return "TOO FAR";
 				case FpReject.Side:         return "SIDE";
 				case FpReject.DayCap:       return "DAY CAP";
 				case FpReject.SessionCap:   return "SESS CAP";
 				case FpReject.InTrade:      return "IN TRADE";
 				case FpReject.EventOff:     return "EVT OFF";
-				case FpReject.XtpBosOnly:   return "XTP BOS ONLY";
 				case FpReject.Ema:          return "EMA";
 				case FpReject.Vwap:         return "VWAP";
 				case FpReject.Risk:         return "RISK";

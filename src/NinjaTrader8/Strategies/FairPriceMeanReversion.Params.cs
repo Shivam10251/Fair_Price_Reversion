@@ -21,7 +21,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private const string G_FP   = "2 · Fair Price";
 		private const string G_MS   = "3 · Market Structure";
 		private const string G_TM   = "4 · Trade Management";
-		private const string G_XTP  = "4b · Extended-move TP";
+		private const string G_FIX  = "4c · Fixed TP/SL";
+		private const string G_TRL  = "4d · Trailing Stop";
 		private const string G_RISK = "5 · Risk Sizing";
 		private const string G_LIM  = "5b · Daily Limits";
 		private const string G_NEWS = "6 · News Fair Price";
@@ -80,13 +81,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public int FairPriceReferenceMinutes { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Zone distance unit", GroupName = G_FP, Order = 2)]
-		public FpZoneUnit ZoneUnit { get; set; }
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Non-tradeable zone (% of Fair Price)", Description = "Half-width of the no-new-entry zone around Fair Price, as a PERCENTAGE of Fair Price. At FP 20,000 a value of 0.1 means 20 points either side. Must be smaller than Band 1 %.", GroupName = G_FP, Order = 2)]
+		public double ZonePercent { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0.0, double.MaxValue)]
-		[Display(Name = "Zone distance", Description = "Half-width of the no-new-entry zone around Fair Price.", GroupName = G_FP, Order = 3)]
-		public double ZoneDistance { get; set; }
+		[Display(Name = "Band 1 — near edge (% of Fair Price)", Description = "Outer edge of the NEAR setup band, as a percentage of Fair Price. From the zone edge out to here, take profit targets the risk/reward multiple below. Must be larger than the zone % and smaller than Band 2 %.", GroupName = G_FP, Order = 3)]
+		public double Band1Percent { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Band 2 — far edge (% of Fair Price)", Description = "Outer edge of the FAR setup band, as a percentage of Fair Price. From Band 1 out to here, take profit targets Fair Price itself. Beyond this an entry is too far and is skipped (TOO FAR). Must be larger than Band 1 %.", GroupName = G_FP, Order = 4)]
+		public double Band2Percent { get; set; }
 
 		// ── 3 · MARKET STRUCTURE ──────────────────────────────────────────────────
 		[NinjaScriptProperty]
@@ -109,99 +116,93 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		// ── 4 · TRADE MANAGEMENT ──────────────────────────────────────────────────
 		[NinjaScriptProperty]
+		[Display(Name = "Entry model", Description = "Which way a structure break is allowed to trade. Reversion: above the Fair Price zone shorts only, below it longs only — the trade heads back toward Fair Price, and both event types are eligible per the switches below. BOS continuation: above the zone LONGS on a bullish BOS only, below it SHORTS on a bearish BOS only. Breaks pointing back toward Fair Price are refused, and so is EVERY CHoCH — 'Take CHoCH entries' has no effect in this model. FAR-band setups take the R:R target instead of Fair Price, which now sits behind the trade.", GroupName = G_TM, Order = 0)]
+		public FpEntryModel EntryModel { get; set; }
+
+		[NinjaScriptProperty]
 		[Range(0.1, double.MaxValue)]
-		[Display(Name = "Risk / Reward ratio", GroupName = G_TM, Order = 0)]
+		[Display(Name = "Band 1 (near) risk / reward ratio", Description = "Reward multiple used for NEAR-band setups (entry between the zone edge and Band 1). FAR-band setups target Fair Price instead and ignore this, except under the BOS-continuation entry model, where they use this multiple too. Ignored entirely when Fixed TP/SL is on.", GroupName = G_TM, Order = 1)]
 		public double RewardRatio { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0, int.MaxValue)]
-		[Display(Name = "Max trades per DAY", Description = "0 = unlimited. Day boundary is evaluated in the session timezone.", GroupName = G_TM, Order = 1)]
+		[Display(Name = "Max trades per DAY", Description = "0 = unlimited. Day boundary is evaluated in the session timezone.", GroupName = G_TM, Order = 2)]
 		public int MaxTradesPerDay { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0, int.MaxValue)]
-		[Display(Name = "Max trades per SESSION", Description = "0 = unlimited.", GroupName = G_TM, Order = 2)]
+		[Display(Name = "Max trades per SESSION", Description = "0 = unlimited.", GroupName = G_TM, Order = 3)]
 		public int MaxTradesPerSession { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0, int.MaxValue)]
-		[Display(Name = "Setup validity (bars)", Description = "Bars from the CONFIRMATION bar of the active level. 0 = never expires.", GroupName = G_TM, Order = 3)]
+		[Display(Name = "Setup validity (bars)", Description = "Bars from the CONFIRMATION bar of the active level. 0 = never expires.", GroupName = G_TM, Order = 4)]
 		public int SetupValidityBars { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Only one open trade at a time", GroupName = G_TM, Order = 4)]
+		[Display(Name = "Only one open trade at a time", GroupName = G_TM, Order = 5)]
 		public bool OnlyOneOpenTrade { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(1, 20)]
-		[Display(Name = "Max concurrent entries per direction", Description = "Used only when 'Only one open trade' is off — NinjaTrader needs an explicit ceiling where Pine used pyramiding.", GroupName = G_TM, Order = 5)]
+		[Display(Name = "Max concurrent entries per direction", Description = "Used only when 'Only one open trade' is off — NinjaTrader needs an explicit ceiling where Pine used pyramiding.", GroupName = G_TM, Order = 6)]
 		public int MaxConcurrentEntriesPerDirection { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Take CHoCH entries", GroupName = G_TM, Order = 6)]
+		[Display(Name = "Take CHoCH entries", GroupName = G_TM, Order = 7)]
 		public bool TakeChochEntries { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Take BOS entries", GroupName = G_TM, Order = 7)]
+		[Display(Name = "Take BOS entries", GroupName = G_TM, Order = 8)]
 		public bool TakeBosEntries { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0.0, double.MaxValue)]
-		[Display(Name = "SL buffer (ticks)", Description = "Extra ticks beyond the displacement candle's extreme.", GroupName = G_TM, Order = 8)]
+		[Display(Name = "SL buffer (ticks)", Description = "Extra ticks beyond the displacement candle's extreme.", GroupName = G_TM, Order = 9)]
 		public double StopBufferTicks { get; set; }
 
-		// A displacement candle can be so small that its own extreme is a useless stop.
-		// Rather than throw the setup away, substitute a fixed stop distance and let the
-		// usual Risk/Reward ratio size the target from it.
-		[NinjaScriptProperty]
-		[Display(Name = "Use fallback SL on tight candles", Description = "When the displacement candle's own stop is tighter than the threshold below, replace it with a fixed distance instead of skipping the trade.", GroupName = G_TM, Order = 9)]
-		public bool UseTightStopFallback { get; set; }
-
 		[NinjaScriptProperty]
 		[Range(0.0, double.MaxValue)]
-		[Display(Name = "Fallback when candle stop is under (points)", Description = "Measured from the entry to the displacement candle's extreme, including the SL buffer.", GroupName = G_TM, Order = 10)]
-		public double TightStopThresholdPoints { get; set; }
+		[Display(Name = "Minimum stop distance (ticks)", Description = "0 = off. Displacement candles tighter than this are rejected with RISK.", GroupName = G_TM, Order = 10)]
+		public double MinStopTicks { get; set; }
 
 		[NinjaScriptProperty]
-		[Range(0.0, double.MaxValue)]
-		[Display(Name = "Fallback SL distance (points)", Description = "The stop used instead. The take profit is this distance multiplied by the Risk / Reward ratio, so a fallback trade keeps the same R:R as every other trade.", GroupName = G_TM, Order = 11)]
-		public double FallbackStopPoints { get; set; }
-
-		[NinjaScriptProperty]
-		[Display(Name = "Close trades at session end", GroupName = G_TM, Order = 12)]
+		[Display(Name = "Close trades at session end", GroupName = G_TM, Order = 11)]
 		public bool CloseAtSessionEnd { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0, 1000)]
-		[Display(Name = "Min bars before first trade", Description = "Warm-up after the trading start point. Structure and Fair Price still run; only entries are blocked.", GroupName = G_TM, Order = 13)]
+		[Display(Name = "Min bars before first trade", Description = "Warm-up after the trading start point. Structure and Fair Price still run; only entries are blocked.", GroupName = G_TM, Order = 12)]
 		public int MinBarsBeforeFirstTrade { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Same-candle TP/SL report", Description = "Reporting only. The real fill comes from the order fill resolution.", GroupName = G_TM, Order = 14)]
+		[Display(Name = "Same-candle TP/SL report", Description = "Reporting only. The real fill comes from the order fill resolution.", GroupName = G_TM, Order = 13)]
 		public FpSameBarPriority SameBarPriority { get; set; }
 
-		// ── 4b · EXTENDED-MOVE SETUP ──────────────────────────────────────────────
-		// Price stretched X% from Fair Price is treated as over-extended. While that
-		// state is ARMED the strategy waits for a BOS running back toward Fair Price —
-		// a CHoCH will not do — and targets Fair Price itself. It stays armed through
-		// any number of trades until price closes on the far side of Fair Price.
+		// ── 4c · FIXED TP/SL ──────────────────────────────────────────────────────
+		// A master override for exits. When on, both the stop and the target are a
+		// fixed number of POINTS from the entry, replacing the structure stop and the
+		// distance-band targets for every trade. Entry gating is unchanged.
 		[NinjaScriptProperty]
-		[Display(Name = "Enable extended-move setup", Description = "Off: entries and targets behave normally. On: once price is X% from Fair Price, only a BOS back toward Fair Price may enter, and it targets Fair Price.", GroupName = G_XTP, Order = 0)]
-		public bool UseExtendedTp { get; set; }
+		[Display(Name = "Use fixed TP/SL (points)", Description = "Master override. ON: every trade takes a fixed points stop and a fixed points target from the entry, ignoring the structure stop, the band targets and the Band 1 R:R. OFF: the percentage-band system decides the target and the displacement candle decides the stop.", GroupName = G_FIX, Order = 0)]
+		public bool UseFixedTpSl { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0.0, double.MaxValue)]
-		[Display(Name = "Trigger: distance from Fair Price (%)", Description = "Percentage of Fair Price. At FP 29,300 a value of 0.5 means 146.5 points.", GroupName = G_XTP, Order = 1)]
-		public double ExtendedTpTriggerPercent { get; set; }
-
-		[NinjaScriptProperty]
-		[Display(Name = "TP target while armed", GroupName = G_XTP, Order = 3)]
-		public FpExtendedTpMode ExtendedTpMode { get; set; }
+		[Display(Name = "Fixed stop loss (points)", Description = "Stop distance in points from the entry, used only when Fixed TP/SL is on. Must be greater than zero.", GroupName = G_FIX, Order = 1)]
+		public double FixedStopLossPoints { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0.0, double.MaxValue)]
-		[Display(Name = "TP offset from Fair Price", Description = "Same unit as the zone distance. Pulls the target back toward the entry.", GroupName = G_XTP, Order = 4)]
-		public double ExtendedTpOffset { get; set; }
+		[Display(Name = "Fixed take profit (points)", Description = "Target distance in points from the entry, used only when Fixed TP/SL is on. Must be greater than zero.", GroupName = G_FIX, Order = 2)]
+		public double FixedTakeProfitPoints { get; set; }
+
+		// ── 4d · TRAILING STOP ────────────────────────────────────────────────────
+		// Applies to the percentage-band setups (Near and Far). Ignored when Fixed
+		// TP/SL is on. The stop only ever tightens toward price, never loosens.
+		[NinjaScriptProperty]
+		[Display(Name = "Trailing stop mode", Description = "Off: the stop stays at entry. R-step: at +1R the stop moves to breakeven, +2R to +1R, +3R to +2R, and so on (R = entry-to-initial-stop). Structure: the stop trails confirmed swings — down to each lower swing high for shorts, up to each higher swing low for longs, using the same pivot and SL-buffer settings as entries. Ignored under Fixed TP/SL.", GroupName = G_TRL, Order = 0)]
+		public FpTrailMode TrailMode { get; set; }
 
 		// ── 5 · RISK SIZING ───────────────────────────────────────────────────────
 		[NinjaScriptProperty]
@@ -248,42 +249,54 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		// ── 6 · NEWS FAIR PRICE ───────────────────────────────────────────────────
 		[NinjaScriptProperty]
-		[Display(Name = "Use news Fair Price", Description = "Master toggle. Off = behaviour is identical to the Pine version.", GroupName = G_NEWS, Order = 0)]
+		[Display(Name = "Use news trading", Description = "MASTER on/off for every news-related entry and setup. Off = the calendar is never loaded and the strategy ignores news entirely — no news Fair Price, no pre-session news window, no surprise handling — regardless of the settings below. On = the individual news settings below take effect.", GroupName = G_NEWS, Order = 0)]
+		public bool UseNewsTrading { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Use news Fair Price", Description = "Sub-toggle under 'Use news trading'. Off = behaviour is identical to the Pine version (session first-candle Fair Price only).", GroupName = G_NEWS, Order = 1)]
 		public bool UseNewsFairPrice { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "News file path", Description = "ForexFactory export, .json or .csv. Loaded once at startup.", GroupName = G_NEWS, Order = 1)]
+		[Display(Name = "News file path", Description = "ForexFactory export, .json or .csv. Loaded once at startup.", GroupName = G_NEWS, Order = 2)]
 		public string NewsFilePath { get; set; }
 
 		[NinjaScriptProperty]
 		[TypeConverter(typeof(TimeZoneOptionConverter))]
-		[Display(Name = "News file timezone", Description = "Used only for rows WITHOUT an explicit UTC offset (i.e. every CSV row). ForexFactory's default profile is America/New_York.", GroupName = G_NEWS, Order = 2)]
+		[Display(Name = "News file timezone", Description = "Used only for rows WITHOUT an explicit UTC offset (i.e. every CSV row). ForexFactory's default profile is America/New_York.", GroupName = G_NEWS, Order = 3)]
 		public string NewsFileTimeZoneId { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "News CSV date format", Description = "Blank = auto-detect. Set a .NET format (e.g. MM-dd-yyyy) if auto-detection picks the wrong one.", GroupName = G_NEWS, Order = 3)]
+		[Display(Name = "News CSV date format", Description = "Blank = auto-detect. Set a .NET format (e.g. MM-dd-yyyy) if auto-detection picks the wrong one.", GroupName = G_NEWS, Order = 4)]
 		public string NewsCsvDateFormat { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0.0, 24.0)]
-		[Display(Name = "News lookback (hours)", Description = "X — how far before session open a release still qualifies.", GroupName = G_NEWS, Order = 4)]
+		[Display(Name = "News lookback (hours)", Description = "X — how far before session open a release still qualifies.", GroupName = G_NEWS, Order = 5)]
 		public double NewsLookbackHours { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "News impact filter", GroupName = G_NEWS, Order = 5)]
+		[Display(Name = "News impact filter", GroupName = G_NEWS, Order = 6)]
 		public FpNewsImpactFilter NewsImpactFilter { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "News currency filter", Description = "Comma separated, e.g. USD or USD,EUR. Blank = every currency.", GroupName = G_NEWS, Order = 6)]
+		[Display(Name = "News currency filter", Description = "Comma separated, e.g. USD or USD,EUR. Blank = every currency.", GroupName = G_NEWS, Order = 7)]
 		public string NewsCurrencyFilter { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Multiple event rule", Description = "Which release wins when several qualify in the window.", GroupName = G_NEWS, Order = 7)]
+		[Display(Name = "Multiple event rule", Description = "Which release wins when several qualify in the window.", GroupName = G_NEWS, Order = 8)]
 		public FpNewsMultipleEventRule NewsMultipleEventRule { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Trading start on a news session", Description = "AfterNewsCandle: trading may begin before the session opens. AfterSessionOpen: normal session gating.", GroupName = G_NEWS, Order = 8)]
+		[Display(Name = "Trading start on a news session", Description = "AfterNewsCandle: trading may begin before the session opens. AfterSessionOpen: normal session gating.", GroupName = G_NEWS, Order = 9)]
 		public FpNewsTradingStart NewsTradingStart { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Trade pre-session news reversions from news time", Description = "When a qualifying release BEFORE the session prices in (actual == forecast), any move it caused is treated as unfair and the pre-news price is marked as Fair Price to revert toward. Turn this on to begin trading that reversion from the NEWS candle while the session window is still closed — e.g. news 18:00, session opens 19:00, trades from 18:00. Needs 'Use news Fair Price' on and a news lookback long enough to span the gap. Independent of 'Trading start on a news session'; applies only to the reversion (priced-in) case.", GroupName = G_NEWS, Order = 10)]
+		public bool NewsReversionFromNewsTime { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "News Fair Price expires at session open", Description = "On: a news Fair Price is valid only BEFORE the session opens (for the pre-session reversion window). At the session open it is discarded and the session's own first-candle Fair Price governs the rest of the session. Off: the news Fair Price governs the entire session (the original behaviour).", GroupName = G_NEWS, Order = 11)]
+		public bool NewsFairPriceExpiresAtSessionOpen { get; set; }
 
 		// ── 6b · NEWS SURPRISE ────────────────────────────────────────────────────
 		// Decides WHICH price is fair after a release, from forecast vs actual.
@@ -388,14 +401,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			FairPriceSource           = FpSource.Close;
 			FairPriceReferenceMinutes = 1;
-			ZoneUnit                  = FpZoneUnit.Points;
-			ZoneDistance              = 20.0;
+			ZonePercent               = 0.1;
+			Band1Percent              = 0.3;
+			Band2Percent              = 0.6;
 
 			PivotLeftBars             = 3;
 			PivotRightBars            = 2;
 			BreakConfirmation         = FpBreakConfirm.Close;
 			ActiveLevelMode           = FpActiveLevelMode.LatestSwing;
 
+			EntryModel                       = FpEntryModel.Reversion;
 			RewardRatio                      = 1.5;
 			MaxTradesPerDay                  = 3;
 			MaxTradesPerSession              = 0;
@@ -405,23 +420,23 @@ namespace NinjaTrader.NinjaScript.Strategies
 			TakeChochEntries                 = true;
 			TakeBosEntries                   = true;
 			StopBufferTicks                  = 0.0;
-			UseTightStopFallback             = false;
-			TightStopThresholdPoints         = 5.0;
-			FallbackStopPoints               = 10.0;
+			MinStopTicks                     = 0.0;
 			CloseAtSessionEnd                = false;
 			MinBarsBeforeFirstTrade          = 3;
 			SameBarPriority                  = FpSameBarPriority.SlFirst;
 
-			UseExtendedTp            = false;
-			ExtendedTpTriggerPercent = 0.5;
-			ExtendedTpMode           = FpExtendedTpMode.FairPriceAlways;
-			ExtendedTpOffset         = 0.0;
+			UseFixedTpSl          = false;
+			FixedStopLossPoints   = 20.0;
+			FixedTakeProfitPoints = 40.0;
+
+			TrailMode             = FpTrailMode.Off;
 
 			RiskTargetUSD    = 100.0;
 			RiskToleranceUSD = 20.0;
 			RiskHardCapUSD   = 150.0;
 			MaxContracts     = 10;
 
+			UseNewsTrading        = true;
 			UseNewsFairPrice      = false;
 			NewsFilePath          = string.Empty;
 			NewsFileTimeZoneId    = "America/New_York";
@@ -431,6 +446,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 			NewsCurrencyFilter    = "USD";
 			NewsMultipleEventRule = FpNewsMultipleEventRule.First;
 			NewsTradingStart      = FpNewsTradingStart.AfterSessionOpen;
+			NewsReversionFromNewsTime         = false;
+			NewsFairPriceExpiresAtSessionOpen = true;
 
 			UseEmaFilter   = false;
 			UseEma1        = true;

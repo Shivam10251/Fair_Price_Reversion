@@ -10,9 +10,6 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 	/// <summary>Which price of the session's first reference candle becomes Fair Price.</summary>
 	public enum FpSource { Close, Open, HL2, HLC3 }
 
-	/// <summary>Unit used by the Fair Price zone distance and the extended-TP offset.</summary>
-	public enum FpZoneUnit { Points, Ticks }
-
 	/// <summary>Whether a structure level must be broken by a close or by a wick.</summary>
 	public enum FpBreakConfirm { Close, Wick }
 
@@ -23,8 +20,40 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 	/// </summary>
 	public enum FpActiveLevelMode { LatestSwing, RoleValidOnly }
 
-	/// <summary>Target selection while the extended-move TP override is armed.</summary>
-	public enum FpExtendedTpMode { FairPriceAlways, NearerOfTheTwo, FartherOfTheTwo }
+	/// <summary>
+	/// Which distance band from Fair Price an entry falls in, deciding both whether
+	/// the trade is allowed and how its take-profit is chosen.
+	///   None   : the entry sits inside the non-tradeable zone (no trade).
+	///   Near   : between the zone edge and Band 1 — take profit at the R:R multiple.
+	///   Far    : between Band 1 and Band 2 — take profit at Fair Price itself.
+	///   Beyond : past Band 2 — too far from Fair Price, no trade.
+	/// </summary>
+	public enum FpSetupBand { None, Near, Far, Beyond }
+
+	/// <summary>
+	/// Which side of the Fair Price zone a structure break is allowed to trade.
+	///   Reversion       : the original model. Above the zone only SHORTS, below it
+	///                     only LONGS, so every trade heads back toward Fair Price.
+	///                     Both BOS and CHoCH are eligible, per their own switches.
+	///   BosContinuation : the inverse. Above the zone only LONGS on a bullish BOS,
+	///                     below it only SHORTS on a bearish BOS — the move away from
+	///                     Fair Price is traded rather than faded. Every CHoCH is
+	///                     refused here, and so is any break pointing back toward Fair
+	///                     Price, whatever "Take CHoCH entries" says. A FAR-band setup
+	///                     takes the R:R target rather than Fair Price, which now sits
+	///                     behind a trade running away from it.
+	/// </summary>
+	public enum FpEntryModel { Reversion, BosContinuation }
+
+	/// <summary>
+	/// Trailing-stop behaviour for percentage-band setups (Near and Far).
+	///   Off       : the stop stays where it was placed at entry.
+	///   RStep     : whole-R ratchet — at +1R the stop moves to breakeven, at +2R to
+	///               +1R, at +3R to +2R, and so on. Only ever tightens.
+	///   Structure : the stop trails confirmed swings — down to each lower swing high
+	///               for shorts, up to each higher swing low for longs. Only tightens.
+	/// </summary>
+	public enum FpTrailMode { Off, RStep, Structure }
 
 	/// <summary>Impact rating as parsed from the calendar file.</summary>
 	public enum FpNewsImpact { Unknown = 0, Low = 1, Medium = 2, High = 3 }
@@ -88,6 +117,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		NewsWait,    // a news surprise is waiting for its post-news consolidation
 		Warmup,      // MinBarsBeforeFirstTrade has not elapsed
 		InZone,      // close sits inside the Fair Price zone
+		TooFar,      // close sits beyond Band 2 — too far from Fair Price to trade
 		Side,        // break direction disagrees with the Fair Price side
 		DailyLoss,   // realised loss for the trading day reached the limit
 		DailyProfit, // realised profit for the trading day reached the limit
@@ -95,10 +125,9 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		SessionCap,  // max trades per session reached
 		InTrade,     // a trade is open and "one at a time" is on
 		EventOff,    // CHoCH or BOS entries disabled for this event type
-		XtpBosOnly,  // extended-move setup is armed: only a BOS its way may enter
 		Ema,         // EMA filter rejected it
 		Vwap,        // VWAP filter rejected it
-		Risk,        // risk <= 0, or the bracket could not be built
+		Risk,        // risk <= 0 or below the minimum stop distance
 		RiskCap,     // one contract would risk more than RiskHardCapUSD
 		Unreconciled // strategy restarted into an un-matched live position
 	}

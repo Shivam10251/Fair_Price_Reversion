@@ -73,8 +73,28 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_tickSize   = Instrument.MasterInstrument.TickSize;
 			_pointValue = Instrument.MasterInstrument.PointValue;
 
-			_zoneOffset = ZoneUnit == FpZoneUnit.Ticks ? ZoneDistance     * _tickSize : ZoneDistance;
-			_xtpOffset  = ZoneUnit == FpZoneUnit.Ticks ? ExtendedTpOffset * _tickSize : ExtendedTpOffset;
+			// The three setup percentages must be strictly ordered so the zone and the
+			// two bands never overlap. Fixed TP/SL, when on, needs positive distances.
+			if (Band1Percent <= ZonePercent)
+				Fail("Band 1 % (" + Band1Percent + ") must be greater than the non-tradeable zone % (" + ZonePercent + ").");
+			else if (Band2Percent <= Band1Percent)
+				Fail("Band 2 % (" + Band2Percent + ") must be greater than Band 1 % (" + Band1Percent + ").");
+
+			// The entry model inverts the direction of every trade, so it is stated once
+			// at load rather than left to be inferred from the entry log.
+			if (EntryModel == FpEntryModel.BosContinuation)
+				Print("FPMR: entry model is BOS CONTINUATION. Above the Fair Price zone only LONGS on a bullish "
+				    + "BOS, below it only SHORTS on a bearish BOS. Every CHoCH is refused, whatever 'Take CHoCH "
+				    + "entries' says, and so is any break pointing back toward Fair Price. FAR-band setups take "
+				    + "the R:R target, because Fair Price now sits behind a trade running away from it.");
+
+			if (UseFixedTpSl)
+			{
+				if (FixedStopLossPoints <= 0.0)
+					Fail("Fixed stop loss (points) must be greater than zero when Fixed TP/SL is on.");
+				else if (FixedTakeProfitPoints <= 0.0)
+					Fail("Fixed take profit (points) must be greater than zero when Fixed TP/SL is on.");
+			}
 
 			_sessionTz = TimeZoneRegistry.Resolve(SessionTimeZoneId);
 			if (_sessionTz == null)
@@ -136,8 +156,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				Fail(windowError);
 
 			_structure = new StructureEngine(ActiveLevelMode);
-			_fair      = new FairPriceEngine();
-			_xtp       = new ExtendedTpEngine(UseExtendedTp, ExtendedTpTriggerPercent, ExtendedTpMode);
+			_fair      = new FairPriceEngine(NewsFairPriceExpiresAtSessionOpen);
 			_vwap      = new SessionVwap();
 
 			// Only construct what the filter will actually read — an unused EMA is pure
@@ -186,7 +205,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_news     = null;
 			_newsLoad = null;
 
-			if (!UseNewsFairPrice)
+			// Master gate: with news trading off, the calendar is never loaded and no
+			// news-related entry or setup can fire, whatever the sub-toggles say.
+			if (!UseNewsTrading || !UseNewsFairPrice)
 				return;
 
 			_newsTz = TimeZoneRegistry.Resolve(NewsFileTimeZoneId);
