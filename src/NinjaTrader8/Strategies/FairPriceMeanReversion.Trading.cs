@@ -54,7 +54,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 					? Instrument.MasterInstrument.RoundToTickSize(High[0] + StopBufferTicks * _tickSize)
 					: Instrument.MasterInstrument.RoundToTickSize(Low[0]  - StopBufferTicks * _tickSize));
 
-			double risk = dir < 0 ? stop - entry : entry - stop;
+			double signalRisk = dir < 0 ? stop - entry : entry - stop;
 
 			// Which distance band the entry sits in. Fixed TP/SL bypasses the band
 			// system for both gating (no "too far" limit) and target selection.
@@ -62,9 +62,62 @@ namespace NinjaTrader.NinjaScript.Strategies
 				? FpSetupBand.Near
 				: SetupBands.Classify(entry, _fairPrice, _hasFair, ZonePercent, Band1Percent, Band2Percent);
 
-			SizingResult sizing = RiskSizer.Size(entry, stop, _pointValue,
+			// The target is resolved HERE rather than at submission, because under the
+			// Swap reverse modes it becomes the STOP — and the stop is what the position
+			// is sized on. Sizing before the bracket is settled would size the wrong
+			// distance and silently multiply the money at risk.
+			bool   targetIsFair;
+			double target = ComputeTarget(dir, entry, signalRisk, band, out targetIsFair);
+
+			// ── The bracket that will actually be PLACED ──────────────────────────
+			int    execDir    = dir;
+			double execStop   = stop;
+			double execTarget = target;
+
+			if (ReverseMode == FpReverseMode.Mirror)
+			{
+				// Same distances, other side of the entry. Risk is unchanged.
+				execDir      = -dir;
+				execStop     = Instrument.MasterInstrument.RoundToTickSize(2.0 * entry - stop);
+				execTarget   = Instrument.MasterInstrument.RoundToTickSize(2.0 * entry - target);
+				targetIsFair = false;   // the mirror of Fair Price is not Fair Price
+			}
+			else if (ReverseMode == FpReverseMode.Swap || ReverseMode == FpReverseMode.SwapKeepSize)
+			{
+				// The true inverse: the original target becomes the stop and vice versa,
+				// so this trade loses exactly when the original would have won.
+				execDir      = -dir;
+				execStop     = target;
+				execTarget   = stop;
+				targetIsFair = false;
+			}
+
+			// Risk is measured on the stop that is actually going to sit on the order.
+			// Under Swap that is the old TARGET distance, typically far wider than the
+			// signal's own stop.
+			double execRisk = Math.Abs(entry - execStop);
+
+			// SwapKeepSize sizes on the SIGNAL's stop rather than the one being placed,
+			// so the position is identical to what the un-reversed setup would have taken
+			// and the P&L mirrors in dollars. The money actually at risk is then
+			// execRisk/signalRisk times the target — the cap is knowingly breached, and
+			// the entry log states the real figure.
+			double sizingStop = ReverseMode == FpReverseMode.SwapKeepSize ? stop : execStop;
+
+			SizingResult sizing = RiskSizer.Size(entry, sizingStop, _pointValue,
 				RiskTargetUSD, RiskToleranceUSD, RiskHardCapUSD, MaxContracts);
 
+			// The daily-loss projection needs what this trade can ACTUALLY lose. Under
+			// SwapKeepSize the position is sized on the signal's stop but carries the far
+			// wider swapped one, so sizing.ResultingRisk understates the exposure and the
+			// gate would wave through trades that blow past the daily limit. Every other
+			// mode has the two equal, so this is a no-op there.
+			double trueRiskUsd = execRisk * sizing.Quantity * _pointValue;
+
+			// The filters below are asked about the SIGNAL direction, not the placed one.
+			// Reverse is an execution decision layered on top of a setup; asking the EMA
+			// gate about the flipped side would change which setups are found, not just
+			// which way they are taken.
 			GateState g = new GateState
 			{
 				Reconciled   = !_unreconciled,
@@ -75,7 +128,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				DistanceOk   = band != FpSetupBand.Beyond,
 				NewsReady    = !_newsAwaiting,
 				SideOk       = SideAllowed(dir),
-				DailyLossOk  = !_dayLossHit && LossHeadroomFor(sizing.ResultingRisk),
+				DailyLossOk  = !_dayLossHit && LossHeadroomFor(trueRiskUsd),
 				DailyProfitOk= !_dayProfitHit,
 				DayCapOk     = MaxTradesPerDay     == 0 || _tradesDay     < MaxTradesPerDay,
 				SessionCapOk = MaxTradesPerSession == 0 || _tradesSession < MaxTradesPerSession,
@@ -83,7 +136,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				EventOk      = EventAllowed(brk.Event),
 				EmaOk        = dir < 0 ? EmaOkShort() : EmaOkLong(),
 				VwapOk       = dir < 0 ? VwapOkShort() : VwapOkLong(),
-				RiskOk       = risk > 0 && risk >= MinStopTicks * _tickSize,
+				RiskOk       = execRisk > 0 && execRisk >= MinStopTicks * _tickSize,
 				RiskCapOk    = sizing.Accepted
 			};
 
@@ -95,7 +148,41 @@ namespace NinjaTrader.NinjaScript.Strategies
 				return;
 			}
 
-			SubmitEntry(dir, brk.Event, entry, stop, risk, sizing, band);
+			SubmitEntry(execDir, brk.Event, entry, execStop, execTarget, targetIsFair, sizing, dir);
+		}
+
+		/// <summary>
+		/// Take-profit selection for the SIGNALLED trade, before any reverse transform.
+		///   Fixed TP/SL on -> a fixed number of points from the entry.
+		///   FAR band       -> Fair Price itself (target the full reversion).
+		///   NEAR band      -> the Band 1 risk/reward multiple.
+		///
+		/// The FAR band's Fair Price target only makes sense while the trade is heading
+		/// back toward Fair Price. Under the BOS-continuation model it runs away from it,
+		/// so Fair Price would sit behind the entry and never fill — a FAR setup there
+		/// takes the R:R multiple like a NEAR one.
+		/// </summary>
+		private double ComputeTarget(int dir, double entry, double risk, FpSetupBand band, out bool targetIsFair)
+		{
+			double rawTarget;
+
+			if (UseFixedTpSl)
+			{
+				rawTarget    = dir < 0 ? entry - FixedTakeProfitPoints : entry + FixedTakeProfitPoints;
+				targetIsFair = false;
+			}
+			else if (band == FpSetupBand.Far && EntryModel != FpEntryModel.BosContinuation)
+			{
+				rawTarget    = _fairPrice;
+				targetIsFair = true;
+			}
+			else
+			{
+				rawTarget    = dir < 0 ? entry - risk * RewardRatio : entry + risk * RewardRatio;
+				targetIsFair = false;
+			}
+
+			return Instrument.MasterInstrument.RoundToTickSize(rawTarget);
 		}
 
 		/// <summary>
@@ -350,45 +437,25 @@ namespace NinjaTrader.NinjaScript.Strategies
 				Time[0].ToString("yyyy-MM-dd HH:mm:ss"), label, dir < 0 ? "bearish" : "bullish", extra));
 		}
 
-		private void SubmitEntry(int dir, FpBreakEvent evt, double entry, double stop, double risk,
-		                         SizingResult sizing, FpSetupBand band)
+		private void SubmitEntry(int dir, FpBreakEvent evt, double entry, double stop, double target,
+		                         bool targetIsFair, SizingResult sizing, int signalDir)
 		{
-			// Take-profit selection:
-			//   Fixed TP/SL on -> a fixed number of points from the entry.
-			//   FAR band       -> Fair Price itself (target the full reversion).
-			//   NEAR band      -> the Band 1 risk/reward multiple.
+			// The bracket arrives already resolved — side, stop and target are whatever
+			// the reverse mode decided — so this only validates it against the entry and
+			// hands it to NinjaTrader.
 			//
-			// The FAR band's Fair Price target only makes sense while the trade is
-			// heading back toward Fair Price. Under the BOS-continuation model it runs
-			// away from it, so Fair Price would sit behind the entry and never fill —
-			// a FAR setup there takes the R:R multiple like a NEAR one.
-			double rawTarget;
-			bool   targetIsFair;
+			// After rounding the target must still sit at least one tick beyond the entry
+			// and the stop on the other side of it, or the bracket is nonsense. Both legs
+			// are checked because under a reverse transform either can land on the wrong
+			// side: a Mirror of a target that rounded onto the entry, or a Swap of a
+			// bracket whose stop was tighter than one tick.
+			bool bracketSane = dir < 0
+				? target <= entry - _tickSize && stop >= entry + _tickSize
+				: target >= entry + _tickSize && stop <= entry - _tickSize;
 
-			if (UseFixedTpSl)
+			if (!bracketSane)
 			{
-				rawTarget    = dir < 0 ? entry - FixedTakeProfitPoints : entry + FixedTakeProfitPoints;
-				targetIsFair = false;
-			}
-			else if (band == FpSetupBand.Far && EntryModel != FpEntryModel.BosContinuation)
-			{
-				rawTarget    = _fairPrice;
-				targetIsFair = true;
-			}
-			else
-			{
-				rawTarget    = dir < 0 ? entry - risk * RewardRatio : entry + risk * RewardRatio;
-				targetIsFair = false;
-			}
-
-			double target = Instrument.MasterInstrument.RoundToTickSize(rawTarget);
-
-			// After rounding the target must still sit at least one tick beyond the
-			// signal price, otherwise the bracket is nonsense.
-			bool targetViable = dir < 0 ? target <= entry - _tickSize : target >= entry + _tickSize;
-			if (!targetViable)
-			{
-				RecordRejection(dir, FpReject.Risk, sizing);
+				RecordRejection(signalDir, FpReject.Risk, sizing);
 				return;
 			}
 
@@ -429,9 +496,27 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_tradesDay++;
 			_tradesSession++;
 
-			Print(string.Format(CultureInfo.InvariantCulture, "{0}  ENTRY {1}  |  {2}",
+			// A reversed trade is logged as what it IS — the placed side — with a tag
+			// naming the signal it came from. Reading a SHORT in the log and finding a
+			// bullish break on the chart is otherwise unexplainable.
+			string tag = string.Empty;
+
+			if (ReverseMode == FpReverseMode.SwapKeepSize)
+			{
+				double trueRisk = Math.Abs(entry - stop) * sizing.Quantity * _pointValue;
+				tag = string.Format(CultureInfo.InvariantCulture,
+					" | REVERSED (swap, original size) from a {0} signal | TRUE RISK {1:0.} vs target {2:0.}",
+					signalDir > 0 ? "LONG" : "SHORT", trueRisk, RiskTargetUSD);
+			}
+			else if (ReverseMode == FpReverseMode.Mirror)
+				tag = " | REVERSED (mirror) from a " + (signalDir > 0 ? "LONG" : "SHORT") + " signal";
+			else if (ReverseMode == FpReverseMode.Swap)
+				tag = " | REVERSED (swap) from a " + (signalDir > 0 ? "LONG" : "SHORT") + " signal";
+
+			Print(string.Format(CultureInfo.InvariantCulture, "{0}  ENTRY {1}{2}  |  {3}",
 				Time[0].ToString("yyyy-MM-dd HH:mm:ss"),
 				rec.Describe(),
+				tag,
 				sizing.Describe(RiskTargetUSD, RiskToleranceUSD, RiskHardCapUSD)));
 		}
 

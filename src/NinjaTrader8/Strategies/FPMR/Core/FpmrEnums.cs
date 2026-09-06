@@ -55,6 +55,35 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 	/// </summary>
 	public enum FpTrailMode { Off, RStep, Structure }
 
+	/// <summary>
+	/// Whether the resolved bracket is placed as signalled or flipped to the other
+	/// side, and — when flipped — how the stop and target are rebuilt.
+	///
+	///   Off          : trade the setup as signalled.
+	///   Mirror       : opposite side, stop and target MIRRORED about the entry, so
+	///                  both distances — and therefore the sized risk and the R
+	///                  multiple — are unchanged. The reversed trade still has a
+	///                  near stop and a far target, so it can lose the same setup
+	///                  the original lost.
+	///   Swap         : opposite side with the stop and target LEVELS exchanged. A
+	///                  long risking 25 to make 30 becomes a short risking 30 to
+	///                  make 25. This is the true P&amp;L inverse: the reversed trade
+	///                  loses exactly when the original would have won, so the two
+	///                  win rates sum to 100%. The risk DISTANCE changes, so the
+	///                  position is re-sized on it — the outcomes invert, the money
+	///                  does not.
+	///   SwapKeepSize : as Swap, but the position keeps the size the ORIGINAL setup
+	///                  would have taken, so the P&amp;L mirrors in dollars too. The
+	///                  only mode that reproduces the inverse equity curve, and it
+	///                  does so by DELIBERATELY BREACHING the risk cap: the stop is
+	///                  now the old target distance while the quantity was sized for
+	///                  the old stop, so money at risk is multiplied by target/stop.
+	///                  A diagnostic tool, not a risk policy.
+	///
+	/// Mirrors FpReverseMode in the MT5 build so both platforms configure the same.
+	/// </summary>
+	public enum FpReverseMode { Off, Mirror, Swap, SwapKeepSize }
+
 	/// <summary>Impact rating as parsed from the calendar file.</summary>
 	public enum FpNewsImpact { Unknown = 0, Low = 1, Medium = 2, High = 3 }
 

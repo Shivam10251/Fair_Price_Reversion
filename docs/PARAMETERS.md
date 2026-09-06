@@ -41,7 +41,7 @@ user-editable from the strategy dialog.
 | Parameter | Default | Meaning |
 |---|---|---|
 | Entry model | `Reversion` | Which way a break may trade. `Reversion`: above the zone shorts only, below it longs only — back toward Fair Price, BOS and CHoCH both eligible. `BosContinuation`: above the zone LONGS on a bullish BOS only, below it SHORTS on a bearish BOS only; every CHoCH is refused and so is any break pointing back toward Fair Price. FAR-band setups then take the R:R target, since Fair Price sits behind the trade. |
-| Risk / Reward ratio | `1.5` | TP = entry ± risk × RR, unless the extended-move override fires. |
+| Risk / Reward ratio | `1.5` | TP = entry ± risk × RR for NEAR-band setups. FAR-band setups target Fair Price instead, except under `BosContinuation`. Ignored entirely under Fixed TP/SL (4c). |
 | Max trades per DAY | `3` | 0 = unlimited. Day boundary is in the session timezone. |
 | Max trades per SESSION | `0` | 0 = unlimited. |
 | Setup validity (bars) | `30` | Bars from the *confirmation* bar of the active level. 0 = never expires. |
@@ -55,15 +55,67 @@ user-editable from the strategy dialog.
 | Min bars before first trade | `3` | Warm-up after the trading start point. Structure and Fair Price still run; only entries are blocked. |
 | Same-candle TP/SL report | `SlFirst` | Reporting only. The real fill comes from the order fill resolution. |
 
-## 4b · Extended-move TP override
+## 4c · Fixed TP/SL
+
+A master override for exits. When on, both legs are a fixed number of POINTS from
+the entry, replacing the structure stop and the distance-band targets for every
+trade. Entry gating is unchanged, except that the band system's "too far" limit no
+longer applies — a fixed-bracket trade is classified NEAR wherever it sits.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| Enable extended-move TP override | `false` | |
-| Trigger: distance from Fair Price (%) | `0.5` | Percentage of Fair Price. At FP 29,300 that is 146.5 points. |
-| Y — trades to apply it to | `1` | Counter refills to Y on every bar price is still beyond the trigger; resets to 0 at session start. |
-| TP target while active | `FairPriceAlways` | Or `NearerOfTheTwo` / `FartherOfTheTwo`, compared against the RR target. |
-| TP offset from Fair Price | `0` | Same unit as the zone distance. Pulls the target back toward the entry. |
+| Use fixed TP/SL (points) | `false` | Master switch. ON ignores the structure stop, the band targets and the Band 1 R:R. |
+| Fixed stop loss (points) | `20` | Stop distance from the entry. Must be greater than zero when the switch is on. |
+| Fixed take profit (points) | `40` | Target distance from the entry. Must be greater than zero when the switch is on. |
+
+## 4d · Trailing Stop
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| Trailing stop mode | `Off` | `RStep`: at +1R the stop moves to breakeven, +2R to +1R, and so on (R = entry to initial stop). `Structure`: trails confirmed swings, using the same pivot and SL-buffer settings as entries. Only ever tightens. Ignored under Fixed TP/SL. |
+
+## 4e · Reverse Signals
+
+Takes the other side of every setup the strategy produces. **Entry gating is
+untouched** — the same setups are found and the same ones are refused; only the
+bracket that reaches the broker is flipped. The filters (side, EMA, VWAP, event
+type) are all still asked about the *signalled* direction, because reverse is an
+execution decision layered on a setup, not a different way of finding setups.
+
+Worked example, a long signalled at 25,000 with a 25-point stop and a 30-point
+target:
+
+| Mode | Side | Stop | Target | Risk : reward |
+|---|---|---|---|---|
+| `Off` | LONG | 24,975 | 25,030 | 25 : 30 |
+| `Mirror` | SHORT | 25,025 | 24,970 | 25 : 30 |
+| `Swap` | SHORT | 25,030 | 24,975 | **30 : 25** |
+| `SwapKeepSize` | SHORT | 25,030 | 24,975 | 30 : 25, at the LONG's quantity |
+
+`Mirror` keeps both distances, so risk and the R multiple are unchanged — but the
+reversed trade still has a near stop and a far target, so it can lose the same
+setup the original lost. It is not the P&L inverse.
+
+`Swap` exchanges the two **levels**. That is the true inverse: the trade loses
+exactly when the original would have won, so the two win rates sum to 100%. The
+risk *distance* changes, so the position is re-sized on it — the outcomes invert,
+the money does not.
+
+`SwapKeepSize` keeps the quantity the un-reversed setup would have taken, which
+mirrors the P&L in dollars as well. It does so by **deliberately breaching the risk
+cap**: the stop is now the old target distance while the quantity was sized for the
+old stop, multiplying money at risk by target/stop. Each entry logs its `TRUE RISK`,
+and the daily-loss gate is given that real figure rather than the sized one. A
+diagnostic tool for producing an inverse equity curve, not a risk policy.
+
+The active mode is printed once at load, and every reversed entry is logged on the
+side actually placed with a `REVERSED (…) from a LONG/SHORT signal` tag.
+
+Mirrors `FpReverseMode` in the MT5 build, so both platforms configure the same.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| Reverse mode | `Off` | `Off` / `Mirror` / `Swap` / `SwapKeepSize`, as above. |
 
 ## 5 · Risk Sizing *(new — not in the Pine version)*
 

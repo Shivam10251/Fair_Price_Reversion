@@ -23,6 +23,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private const string G_TM   = "4 · Trade Management";
 		private const string G_FIX  = "4c · Fixed TP/SL";
 		private const string G_TRL  = "4d · Trailing Stop";
+		private const string G_REV  = "4e · Reverse Signals";
 		private const string G_RISK = "5 · Risk Sizing";
 		private const string G_LIM  = "5b · Daily Limits";
 		private const string G_NEWS = "6 · News Fair Price";
@@ -203,6 +204,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[NinjaScriptProperty]
 		[Display(Name = "Trailing stop mode", Description = "Off: the stop stays at entry. R-step: at +1R the stop moves to breakeven, +2R to +1R, +3R to +2R, and so on (R = entry-to-initial-stop). Structure: the stop trails confirmed swings — down to each lower swing high for shorts, up to each higher swing low for longs, using the same pivot and SL-buffer settings as entries. Ignored under Fixed TP/SL.", GroupName = G_TRL, Order = 0)]
 		public FpTrailMode TrailMode { get; set; }
+
+		// ── 4e · REVERSE SIGNALS ──────────────────────────────────────────────────
+		// Takes the other side of every setup the strategy produces. Entry gating is
+		// untouched — the same setups are found, and the same ones are refused; only
+		// the bracket that reaches the broker is flipped.
+		//
+		// Mirror keeps both distances, so risk and R are unchanged but the reversed
+		// trade still has a near stop and a far target and can lose where the
+		// original lost. Swap exchanges the two LEVELS, which is the true inverse:
+		// a long risking 25 to make 30 becomes a short risking 30 to make 25.
+		[NinjaScriptProperty]
+		[Display(Name = "Reverse mode", Description = "Off: trade the setup as signalled. Mirror bracket: opposite side with the stop and target MIRRORED about the entry — both distances, and so the sized risk and the R multiple, are unchanged. Swap bracket: opposite side with the stop and target LEVELS exchanged, so a long risking 25 points to make 30 becomes a short risking 30 to make 25. That is the true P&L inverse — this trade loses exactly when the original would have won — but the risk distance changes, so the position is re-sized on it and the money does not mirror. Swap bracket, ORIGINAL size: as Swap, but the quantity the un-reversed setup would have taken is kept, mirroring the P&L in dollars as well. That DELIBERATELY BREACHES the risk cap by target/stop and is a diagnostic tool, not a risk policy.", GroupName = G_REV, Order = 0)]
+		public FpReverseMode ReverseMode { get; set; }
 
 		// ── 5 · RISK SIZING ───────────────────────────────────────────────────────
 		[NinjaScriptProperty]
@@ -430,6 +444,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 			FixedTakeProfitPoints = 40.0;
 
 			TrailMode             = FpTrailMode.Off;
+
+			ReverseMode           = FpReverseMode.Off;
 
 			RiskTargetUSD    = 100.0;
 			RiskToleranceUSD = 20.0;

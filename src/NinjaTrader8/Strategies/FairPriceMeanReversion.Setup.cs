@@ -96,6 +96,25 @@ namespace NinjaTrader.NinjaScript.Strategies
 					Fail("Fixed take profit (points) must be greater than zero when Fixed TP/SL is on.");
 			}
 
+			// Reverse flips the side of every order that reaches the broker, so like the
+			// entry model it is stated once at load rather than inferred from the log.
+			if (ReverseMode == FpReverseMode.Mirror)
+				Print("FPMR: REVERSE is on (mirror bracket). Every setup is taken on the OPPOSITE side, with the "
+				    + "stop and target mirrored about the entry. Both distances are unchanged, so risk and the R "
+				    + "multiple are the same as the un-reversed trade — this is not the P&L inverse, and a "
+				    + "reversed trade can lose where the original lost.");
+			else if (ReverseMode == FpReverseMode.Swap)
+				Print("FPMR: REVERSE is on (swap bracket). Every setup is taken on the OPPOSITE side with the stop "
+				    + "and target LEVELS exchanged — a long risking 25 points to make 30 becomes a short risking 30 "
+				    + "to make 25. This trade loses exactly when the original would have won. The risk DISTANCE "
+				    + "changes, so the position is re-sized on it and the money does not mirror, only the outcomes.");
+			else if (ReverseMode == FpReverseMode.SwapKeepSize)
+				Print("FPMR: REVERSE is on (swap bracket, ORIGINAL size). As swap, but the quantity the un-reversed "
+				    + "setup would have taken is kept, so the P&L mirrors in dollars. This DELIBERATELY BREACHES the "
+				    + "risk cap — the stop is now the old target distance while the quantity was sized for the old "
+				    + "stop, multiplying money at risk by target/stop. Each entry logs its TRUE RISK. Diagnostic "
+				    + "tool, not a risk policy.");
+
 			_sessionTz = TimeZoneRegistry.Resolve(SessionTimeZoneId);
 			if (_sessionTz == null)
 				Fail("Session timezone '" + SessionTimeZoneId + "' could not be resolved on this machine.");
