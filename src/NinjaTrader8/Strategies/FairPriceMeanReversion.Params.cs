@@ -218,6 +218,21 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[Display(Name = "Reverse mode", Description = "Off: trade the setup as signalled. Mirror bracket: opposite side with the stop and target MIRRORED about the entry — both distances, and so the sized risk and the R multiple, are unchanged. Swap bracket: opposite side with the stop and target LEVELS exchanged, so a long risking 25 points to make 30 becomes a short risking 30 to make 25. That is the true P&L inverse — this trade loses exactly when the original would have won — but the risk distance changes, so the position is re-sized on it and the money does not mirror. Swap bracket, ORIGINAL size: as Swap, but the quantity the un-reversed setup would have taken is kept, mirroring the P&L in dollars as well. That DELIBERATELY BREACHES the risk cap by target/stop and is a diagnostic tool, not a risk policy.", GroupName = G_REV, Order = 0)]
 		public FpReverseMode ReverseMode { get; set; }
 
+		// A ceiling on what "Swap bracket, ORIGINAL size" is allowed to actually risk.
+		// That mode is sized on the signal's stop but carries the far wider swapped one,
+		// so the normal hard cap does not see the real exposure and the only remaining
+		// bound is Max contracts. This puts a real one back.
+		//
+		// It defaults to OFF, and that is deliberate rather than timid: the whole point
+		// of the mode is a dollar-for-dollar inverse of the un-reversed run, and that
+		// only holds while it takes EVERY trade the original took. A ceiling that skips
+		// trades breaks the mirror. Turn it on to bound a runaway, and read the curve
+		// knowing it is no longer an exact inverse.
+		[NinjaScriptProperty]
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Max true risk, ORIGINAL size mode ($)", Description = "Ceiling on the REAL dollar risk of a trade under 'Swap bracket, ORIGINAL size'. That mode is sized on the signal's stop while carrying the wider swapped one, so the risk hard cap above never sees the true figure — this bounds it. 0 = off, which is the default: the mode only mirrors the original run's P&L while it takes every trade the original took, so any ceiling that skips a trade breaks the mirror. Ignored by every other reverse mode.", GroupName = G_REV, Order = 1)]
+		public double SwapKeepSizeMaxRiskUSD { get; set; }
+
 		// ── 5 · RISK SIZING ───────────────────────────────────────────────────────
 		[NinjaScriptProperty]
 		[Range(1.0, double.MaxValue)]
@@ -445,7 +460,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			TrailMode             = FpTrailMode.Off;
 
-			ReverseMode           = FpReverseMode.Off;
+			ReverseMode            = FpReverseMode.Off;
+			SwapKeepSizeMaxRiskUSD = 0.0;
 
 			RiskTargetUSD    = 100.0;
 			RiskToleranceUSD = 20.0;

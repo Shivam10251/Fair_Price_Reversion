@@ -113,7 +113,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 				    + "setup would have taken is kept, so the P&L mirrors in dollars. This DELIBERATELY BREACHES the "
 				    + "risk cap — the stop is now the old target distance while the quantity was sized for the old "
 				    + "stop, multiplying money at risk by target/stop. Each entry logs its TRUE RISK. Diagnostic "
-				    + "tool, not a risk policy.");
+				    + "tool, not a risk policy."
+				    + (SwapKeepSizeMaxRiskUSD > 0.0
+				        ? " A true-risk ceiling of $" + SwapKeepSizeMaxRiskUSD.ToString("0.##", CultureInfo.InvariantCulture)
+				          + " is set, so trades above it are refused with RISK CAP. That bounds the exposure but "
+				          + "also breaks the dollar mirror, because the un-reversed run took those trades."
+				        : " No true-risk ceiling is set, so 'Max contracts' is the only bound on the exposure."));
 
 			_sessionTz = TimeZoneRegistry.Resolve(SessionTimeZoneId);
 			if (_sessionTz == null)

@@ -113,9 +113,27 @@ side actually placed with a `REVERSED (…) from a LONG/SHORT signal` tag.
 
 Mirrors `FpReverseMode` in the MT5 build, so both platforms configure the same.
 
+### Bounding `SwapKeepSize`
+
+Because that mode is sized on the signal's stop while carrying the wider swapped
+one, the risk hard cap in section 5 never sees the real figure — it clears the
+trade against a risk it is not taking. With daily P&L limits off, **`Max contracts`
+is then the only thing bounding the exposure**: a tight 5-point signal stop sizes
+the maximum position and then hangs the swapped stop on it.
+
+*Max true risk, ORIGINAL size mode ($)* puts a real bound back. A trade whose true
+risk exceeds it is refused with `RISK CAP`, and the log prints the actual number
+rather than the sized one.
+
+It defaults to **0 (off)** on purpose. The mode only mirrors the original run's P&L
+while it takes *every* trade the original took, so any ceiling that skips one
+breaks the mirror — the curve stops being an exact inverse. Set it to bound a
+runaway; read the result knowing what it cost.
+
 | Parameter | Default | Meaning |
 |---|---|---|
 | Reverse mode | `Off` | `Off` / `Mirror` / `Swap` / `SwapKeepSize`, as above. |
+| Max true risk, ORIGINAL size mode ($) | `0` | 0 = off. Ceiling on the real dollar risk under `SwapKeepSize` only; every other mode ignores it. |
 
 ## 5 · Risk Sizing *(new — not in the Pine version)*
 

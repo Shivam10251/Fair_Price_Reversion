@@ -114,6 +114,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 			// mode has the two equal, so this is a no-op there.
 			double trueRiskUsd = execRisk * sizing.Quantity * _pointValue;
 
+			// The same understatement means sizing.Accepted cleared the hard cap against a
+			// risk this trade is not really taking, so under SwapKeepSize the cap is not a
+			// bound at all and Max contracts is the only thing left holding the exposure
+			// down. This is the optional ceiling that puts a real bound back — off by
+			// default, because skipping a trade the un-reversed run took is exactly what
+			// stops the mode from being the dollar mirror it exists to produce.
+			bool keepSizeRiskOk = ReverseMode != FpReverseMode.SwapKeepSize
+			                      || SwapKeepSizeMaxRiskUSD <= 0.0
+			                      || trueRiskUsd <= SwapKeepSizeMaxRiskUSD;
+
 			// The filters below are asked about the SIGNAL direction, not the placed one.
 			// Reverse is an execution decision layered on top of a setup; asking the EMA
 			// gate about the flipped side would change which setups are found, not just
@@ -137,13 +147,23 @@ namespace NinjaTrader.NinjaScript.Strategies
 				EmaOk        = dir < 0 ? EmaOkShort() : EmaOkLong(),
 				VwapOk       = dir < 0 ? VwapOkShort() : VwapOkLong(),
 				RiskOk       = execRisk > 0 && execRisk >= MinStopTicks * _tickSize,
-				RiskCapOk    = sizing.Accepted
+				RiskCapOk    = sizing.Accepted && keepSizeRiskOk
 			};
 
 			FpReject reason = RejectionReporter.FirstFailure(g);
 
 			if (reason != FpReject.None)
 			{
+				// The sizing line a RISK CAP rejection normally prints describes the stop
+				// the position was sized on, which under SwapKeepSize is not the stop that
+				// would have been placed. Say the real number, or the log claims the trade
+				// was refused over a figure well inside the ceiling it just breached.
+				if (reason == FpReject.RiskCap && !keepSizeRiskOk && VerboseLogging)
+					Print(string.Format(CultureInfo.InvariantCulture,
+						"{0}  REJECT RISK CAP — ORIGINAL-size reverse would risk ${1:0.##} ({2:0.##} pts x {3} @ ${4:0.##}/pt), over the ${5:0.##} ceiling.",
+						Time[0].ToString("yyyy-MM-dd HH:mm:ss"), trueRiskUsd, execRisk,
+						sizing.Quantity, _pointValue, SwapKeepSizeMaxRiskUSD));
+
 				RecordRejection(dir, reason, sizing);
 				return;
 			}
