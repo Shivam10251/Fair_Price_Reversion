@@ -330,6 +330,14 @@ public:
                          cfg.fixedStopLossPoints*sym.moneyPerPricePerLot,
                          cfg.fixedStopLossPoints*2.0));
 
+      // Verbose logging in the tester's VISUAL mode floods the live journal and
+      // takes the terminal down with it on the Wine build. Say so rather than
+      // let it look like the strategy crashed.
+      if(cfg.verboseLogging && (bool)MQLInfoInteger(MQL_TESTER) && (bool)MQLInfoInteger(MQL_VISUAL_MODE))
+         Print("FPMR WARNING: verbose logging is ON in VISUAL mode. This prints on nearly every bar and the "
+               "live journal cannot keep up - the terminal may close itself mid-test. Turn 'Verbose logging' "
+               "off for visual runs.");
+
       m_painter.Init(cfg.paint,sym.digits);
 
       m_structure.Init(cfg.activeLevelMode);

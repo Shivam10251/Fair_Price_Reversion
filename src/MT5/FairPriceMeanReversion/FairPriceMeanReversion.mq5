@@ -182,7 +182,11 @@ input bool  InpKeepObjectsOnExit = false;        // Keep the drawings after the 
 
 //--- 10 · DEBUG ---------------------------------------------------------------
 input group "10 · Debug"
-input bool InpVerboseLogging = true;  // Verbose logging (every entry, skip and trail move)
+input bool InpVerboseLogging = false; // Verbose logging (every entry, skip and trail move)
+// WARNING: verbose logging prints a line on almost every bar. In the Strategy
+// Tester's VISUAL mode the journal is rendered live, and that volume of output
+// crashes the terminal under the Mac (Wine) build within seconds. Leave this OFF
+// for visual runs; it is safe for ordinary non-visual backtests.
 
 //--- Runtime ------------------------------------------------------------------
 CFpmrStrategy  g_strategy;
