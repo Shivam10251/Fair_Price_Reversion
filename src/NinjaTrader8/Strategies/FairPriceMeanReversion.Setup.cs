@@ -410,8 +410,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 			if (_nt8Calendar.Subscribe())
 			{
 				Print("FPMR news: subscribed to NinjaTrader's economic calendar for actual values. "
-				    + "Releases arrive as they print; nothing arrives on historical bars, so a BACKTEST needs "
-				    + "an Actual column in the file and the FileOnly setting.");
+				    + "Nothing arrives on historical bars, so a BACKTEST needs an Actual column in the "
+				    + "file and the FileOnly setting.");
+
+				// Ask for the whole calendar rather than waiting for the next release to
+				// print. Without this the strategy has no actual for anything that
+				// released before it started - which, restarted on a VPS, is everything.
+				RequestCalendarPull("startup");
 			}
 			else
 			{
@@ -419,6 +424,24 @@ namespace NinjaTrader.NinjaScript.Strategies
 				  + "). Actual values will come from the calendar file only.", LogLevel.Warning);
 				_nt8Calendar = null;
 			}
+		}
+
+		/// <summary>
+		/// Issues the full-calendar request, retrying later if nothing is connected yet.
+		/// Called at startup and again on the first bars, because State.DataLoaded can
+		/// easily run before the connection is up.
+		/// </summary>
+		private void RequestCalendarPull(string why)
+		{
+			if (_nt8Calendar == null || _nt8Calendar.PullRequested)
+				return;
+
+			string detail;
+			if (_nt8Calendar.RequestFullCalendar(out detail))
+				Print("FPMR news: requested the full economic calendar from NinjaTrader (" + why + ") — " + detail
+				    + ". Actuals for releases earlier today are included.");
+			else if (VerboseLogging)
+				Print("FPMR news: calendar request not issued yet (" + why + ") — " + detail + ". Will retry.");
 		}
 
 		/// <summary>

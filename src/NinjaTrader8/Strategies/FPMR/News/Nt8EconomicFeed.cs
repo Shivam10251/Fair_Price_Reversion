@@ -7,25 +7,38 @@
 //
 //  WHAT NINJATRADER ACTUALLY EXPOSES — read this before changing anything
 //  ---------------------------------------------------------------------
-//  NinjaTrader.Cbi.Calendar publishes a static event, EconomicEventUpdateReceived,
-//  carrying EventName, Country, Importance, Actual, Consensus (the forecast),
-//  Prior and a Timestamp. That is a PUSH, delivered as each release prints.
+//  Two halves, and the second one is easy to miss:
 //
-//  There is NO queryable list of upcoming releases anywhere in the public API —
-//  reflection over NinjaTrader.Core.dll finds events and alert plumbing, and no
-//  collection of scheduled economic events. So this class can answer
-//  "what was the actual for the release that just happened?" and cannot answer
-//  "what is scheduled at 18:00 today?".
+//  1. PUSH. NinjaTrader.Cbi.Calendar publishes a static event,
+//     EconomicEventUpdateReceived, carrying EventName, Country, Importance,
+//     Actual, Consensus (the forecast), Prior and a Timestamp. It fires as each
+//     release prints.
 //
-//  The calendar FILE therefore remains the schedule, and this feed supplies the
-//  number. Both halves are required; neither replaces the other.
+//  2. PULL. NinjaTrader.Tradovate.Adapter exposes a PUBLIC parameterless
+//     RequestCalendarsEconomic(), reachable as
+//         Cbi.Connection.Connections -> connection.Adapter
+//     It asks the server for the whole calendar, and the answer comes back
+//     through the SAME event as (1). Measured on a live connection: 4,708 events
+//     in about five seconds, complete with actuals, consensus and priors,
+//     including releases from earlier the same day.
+//
+//  (2) is what makes unattended use possible. A push alone is useless after a
+//  restart and useless for a release that happened earlier in the session, which
+//  would otherwise force somebody to type the number into a CSV by hand.
+//
+//  NAME MATCHING IS THE TRAP
+//  The two sources name the same release differently — ForexFactory "PPI m/m"
+//  against NinjaTrader "PPI (MoM)" — so Normalise() expands the period suffixes
+//  before stripping punctuation. Without that expansion every month-on-month
+//  release fails to pair up and falls silently to the unknown-value rule.
 //
 //  CONSEQUENCES
-//  * Nothing arrives in a backtest. Historical bars generate no calendar push, so
-//    a backtest must use an Actual column in the file (FpNewsActualSource.FileOnly).
-//  * Delivery depends on the connected provider supplying the calendar feed. If
-//    nothing ever arrives, MatchedCount stays 0 and the strategy says so rather
-//    than silently classifying every release off a missing number.
+//  * Nothing arrives in a BACKTEST. Historical bars generate no push and the pull
+//    needs a live connection, so a backtest needs an Actual column in the file
+//    and FpNewsActualSource.FileOnly.
+//  * Delivery depends on the connected adapter. RequestCalendarsEconomic is an
+//    UNDOCUMENTED internal API reached by reflection; every step is guarded so a
+//    platform update degrades to "no pull available" rather than throwing.
 //  * The event fires on a feed thread, not the bar thread. Every read and write
 //    of _latest is therefore under a lock.
 //  * The subscription is to a STATIC event, so it outlives the strategy instance
@@ -34,6 +47,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Reflection;
 using System.Text;
 
 namespace NinjaTrader.NinjaScript.Strategies.FPMR
@@ -104,6 +118,86 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				return false;
 			}
 		}
+
+		/// <summary>
+		/// Asks the connected adapter for the whole economic calendar, instead of waiting
+		/// for a release to print.
+		///
+		/// This is what makes the strategy usable unattended. A push only ever arrives
+		/// for a release that happens WHILE the strategy is running, which is no help
+		/// after a restart and no help for a release earlier in the day. A pull returns
+		/// the calendar complete with actuals, consensus and priors — measured at 4,708
+		/// events on a live connection, including releases from earlier the same day.
+		///
+		/// Reached by reflection:
+		///     Cbi.Connection.Connections -> connection.Adapter -> RequestCalendarsEconomic()
+		///
+		/// That is an UNDOCUMENTED, INTERNAL NinjaTrader API. Nothing here references
+		/// NinjaTrader.Tradovate.dll directly and every step is guarded, so a platform
+		/// update that renames or removes the method degrades to "no pull available"
+		/// rather than throwing. Results arrive through the same event as a live push.
+		/// </summary>
+		/// <returns>True when a request was actually issued.</returns>
+		public bool RequestFullCalendar(out string detail)
+		{
+			detail = null;
+
+			try
+			{
+				System.Collections.ICollection connections =
+					NinjaTrader.Cbi.Connection.Connections as System.Collections.ICollection;
+
+				if (connections == null || connections.Count == 0)
+				{
+					detail = "no connections yet";
+					return false;
+				}
+
+				foreach (object c in connections)
+				{
+					if (c == null)
+						continue;
+
+					PropertyInfo statusProp = c.GetType().GetProperty("Status");
+					object status = statusProp == null ? null : statusProp.GetValue(c, null);
+					if (status == null || status.ToString() != "Connected")
+						continue;
+
+					PropertyInfo adapterProp = c.GetType().GetProperty("Adapter");
+					object adapter = adapterProp == null ? null : adapterProp.GetValue(c, null);
+					if (adapter == null)
+						continue;
+
+					MethodInfo pull = adapter.GetType().GetMethod("RequestCalendarsEconomic",
+						BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+						null, Type.EmptyTypes, null);
+
+					if (pull == null)
+					{
+						detail = "connected adapter " + adapter.GetType().Name + " has no RequestCalendarsEconomic";
+						continue;
+					}
+
+					pull.Invoke(adapter, null);
+					PullRequested = true;
+					detail = "requested from " + adapter.GetType().FullName;
+					return true;
+				}
+
+				detail = "no connected adapter exposes the calendar request";
+				return false;
+			}
+			catch (Exception ex)
+			{
+				Exception real = ex is TargetInvocationException && ex.InnerException != null
+					? ex.InnerException : ex;
+				detail = real.GetType().Name + ": " + real.Message;
+				return false;
+			}
+		}
+
+		/// <summary>True once a full-calendar request has been issued successfully.</summary>
+		public bool PullRequested { get; private set; }
 
 		/// <summary>Detaches. MUST run from State.Terminated — the event is static.</summary>
 		public void Unsubscribe()
@@ -226,21 +320,36 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		}
 
 		/// <summary>
-		/// Lowercase, alphanumeric only. Drops the punctuation and spacing that differ
-		/// between the two naming conventions ("Core CPI m/m" -> "corecpimm").
+		/// Lowercase, alphanumeric only, with the period suffixes spelled out FIRST.
+		///
+		/// The expansion is the part that matters and it is not cosmetic. ForexFactory
+		/// writes "PPI m/m"; NinjaTrader writes "PPI (MoM)". Stripping punctuation alone
+		/// gives "ppimm" and "ppimom", which do not match each other by containment in
+		/// either direction, so every month-on-month release would silently fail to pair
+		/// up and fall to the unknown-value rule. Verified against a real pull:
+		/// NinjaTrader emits "PPI (MoM)", "Core PPI (MoM)", "Core PPI (YoY)".
+		///
+		///   "PPI m/m"    -> "ppimom"
+		///   "PPI (MoM)"  -> "ppimom"
 		/// </summary>
 		private static string Normalise(string raw)
 		{
 			if (string.IsNullOrWhiteSpace(raw))
 				return string.Empty;
 
-			StringBuilder sb = new StringBuilder(raw.Length);
+			string v = raw.ToLowerInvariant();
 
-			for (int i = 0; i < raw.Length; i++)
+			// Longest first: "m/m" must not be rewritten before "mom" is considered.
+			v = v.Replace("m/m", "mom").Replace("y/y", "yoy").Replace("q/q", "qoq");
+			v = v.Replace("mm", "mom").Replace("yy", "yoy").Replace("qq", "qoq");
+
+			StringBuilder sb = new StringBuilder(v.Length);
+
+			for (int i = 0; i < v.Length; i++)
 			{
-				char c = raw[i];
+				char c = v[i];
 				if (char.IsLetterOrDigit(c))
-					sb.Append(char.ToLowerInvariant(c));
+					sb.Append(c);
 			}
 
 			return sb.ToString();

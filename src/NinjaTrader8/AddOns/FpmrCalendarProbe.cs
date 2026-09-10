@@ -1,44 +1,60 @@
 // =============================================================================
 //  FPMR · AddOn · FpmrCalendarProbe
 //
-//  A diagnostic, not a trading component. It answers one question that cannot be
-//  answered from disk or by reflection:
+//  A diagnostic, not a trading component. It answers two questions that cannot be
+//  answered from disk or by reflection alone:
 //
-//      does NinjaTrader's economic calendar actually PUSH anything on this
-//      machine, with this connection?
+//    1. Does NinjaTrader's economic calendar PUSH anything on this machine, with
+//       this connection?
+//    2. Can the calendar be PULLED on demand, rather than waited for?
 //
-//  NinjaTrader.Cbi.Calendar.EconomicEventUpdateReceived is a static event. It is
-//  declared in NinjaTrader.Core.dll and, of the shipped vendor assemblies, only
-//  NinjaTrader.Tradovate.dll references EconomicCalendarUpdate — so whether it
-//  fires depends on the connected provider, and the only way to find out is to
-//  listen.
+//  WHY (2) MATTERS
+//  A push only ever arrives for a release that prints while the strategy is
+//  running. That is useless for a release that has already happened, and useless
+//  for a VPS restart. But NinjaTrader.Tradovate.Adapter exposes a PUBLIC
+//  RequestCalendarsEconomic() returning Task, reachable as:
 //
-//  WHY AN ADDON RATHER THAN AN INDICATOR OR A STRATEGY
-//  AddOns are instantiated by NinjaTrader at startup, with no chart and no user
-//  action. That makes this safe to leave running on an unattended VPS: it places
-//  no orders, subscribes to no market data, and touches nothing but its own log.
+//      Cbi.Connection.Connections -> connection.Adapter -> (Tradovate.Adapter)
+//
+//  Its results come back through the same Calendar.EconomicEventUpdateReceived
+//  event, so if the pull works, every push below is the answer to a request we
+//  made rather than an accident of timing.
+//
+//  THIS IS AN UNDOCUMENTED, INTERNAL API. It is reached by reflection so that
+//  nothing here references NinjaTrader.Tradovate.dll directly, and every step is
+//  guarded: a NinjaTrader update that renames or removes the method must degrade
+//  to "no pull available", never throw into the platform.
+//
+//  SAFETY
+//  AddOns are instantiated at startup with no chart and no user action, which is
+//  what makes this safe to leave on an unattended VPS. It places no orders,
+//  subscribes to no market data, and calls one read-only request method.
 //
 //  OUTPUT
 //      Documents\NinjaTrader 8\FpmrCalendarProbe.log
-//  One line per push, plus a startup and shutdown line. If the file exists and
-//  contains only the startup line after a release has passed, the calendar does
-//  not feed this connection and the strategy must get actuals from the file.
 // =============================================================================
 using System;
+using System.Collections;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Text;
+using System.Threading;
 using NinjaTrader.NinjaScript;
 
 namespace NinjaTrader.NinjaScript.AddOns
 {
 	public class FpmrCalendarProbe : AddOnBase
 	{
-		private static readonly object      FileGate = new object();
+		private static readonly object FileGate = new object();
+
 		private EventHandler<NinjaTrader.Cbi.EconomicUpdateArgs> _handler;
-		private bool   _subscribed;
-		private int    _received;
-		private string _logPath;
+		private bool     _subscribed;
+		private int      _received;
+		private string   _logPath;
+		private Timer    _poll;
+		private int      _pullAttempts;
+		private bool     _pullDone;
 
 		protected override void OnStateChange()
 		{
@@ -71,8 +87,10 @@ namespace NinjaTrader.NinjaScript.AddOns
 				NinjaTrader.Cbi.Calendar.EconomicEventUpdateReceived += _handler;
 				_subscribed = true;
 
-				Write("PROBE STARTED - subscribed to Calendar.EconomicEventUpdateReceived. "
-				    + "Every economic release NinjaTrader pushes will be logged below.");
+				Write("PROBE STARTED - subscribed to Calendar.EconomicEventUpdateReceived.");
+
+				// Poll for a connected adapter, then ask it for the calendar ONCE.
+				_poll = new Timer(TryPull, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(20));
 			}
 			catch (Exception ex)
 			{
@@ -83,6 +101,12 @@ namespace NinjaTrader.NinjaScript.AddOns
 
 		private void Stop()
 		{
+			if (_poll != null)
+			{
+				_poll.Dispose();
+				_poll = null;
+			}
+
 			if (!_subscribed || _handler == null)
 				return;
 
@@ -93,6 +117,84 @@ namespace NinjaTrader.NinjaScript.AddOns
 			_subscribed = false;
 
 			Write("PROBE STOPPED - " + _received + " release(s) received this session.");
+		}
+
+		/// <summary>
+		/// Walks the live connections looking for an adapter that exposes
+		/// RequestCalendarsEconomic, and calls it once. Everything is reflection and
+		/// everything is guarded - this is an internal API and may simply not be there.
+		/// </summary>
+		private void TryPull(object _)
+		{
+			if (_pullDone)
+				return;
+
+			_pullAttempts++;
+
+			// Give up quietly rather than polling a disconnected platform forever.
+			if (_pullAttempts > 30)
+			{
+				_pullDone = true;
+				Write("PULL GAVE UP - no adapter exposing RequestCalendarsEconomic appeared after "
+				    + (_pullAttempts - 1) + " attempts (~10 minutes).");
+				if (_poll != null) { _poll.Dispose(); _poll = null; }
+				return;
+			}
+
+			try
+			{
+				ICollection connections = NinjaTrader.Cbi.Connection.Connections as ICollection;
+				if (connections == null || connections.Count == 0)
+					return;
+
+				foreach (object c in connections)
+				{
+					if (c == null)
+						continue;
+
+					// Only bother with a connection that is actually up.
+					PropertyInfo statusProp = c.GetType().GetProperty("Status");
+					object status = statusProp == null ? null : statusProp.GetValue(c, null);
+					if (status == null || status.ToString() != "Connected")
+						continue;
+
+					PropertyInfo adapterProp = c.GetType().GetProperty("Adapter");
+					object adapter = adapterProp == null ? null : adapterProp.GetValue(c, null);
+					if (adapter == null)
+						continue;
+
+					MethodInfo pull = adapter.GetType().GetMethod("RequestCalendarsEconomic",
+						BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+						null, Type.EmptyTypes, null);
+
+					if (pull == null)
+					{
+						Write("PULL UNAVAILABLE - connected adapter is " + adapter.GetType().FullName
+						    + ", which has no RequestCalendarsEconomic method.");
+						_pullDone = true;
+						if (_poll != null) { _poll.Dispose(); _poll = null; }
+						return;
+					}
+
+					Write("PULL CALLING RequestCalendarsEconomic() on " + adapter.GetType().FullName + " ...");
+					pull.Invoke(adapter, null);
+					Write("PULL CALL RETURNED without error. Any results arrive as PUSH lines below.");
+
+					_pullDone = true;
+					if (_poll != null) { _poll.Dispose(); _poll = null; }
+					return;
+				}
+			}
+			catch (Exception ex)
+			{
+				Exception real = ex is TargetInvocationException && ex.InnerException != null
+					? ex.InnerException
+					: ex;
+
+				Write("PULL FAILED - " + real.GetType().Name + ": " + real.Message);
+				_pullDone = true;
+				if (_poll != null) { _poll.Dispose(); _poll = null; }
+			}
 		}
 
 		private void OnEconomicUpdate(object sender, NinjaTrader.Cbi.EconomicUpdateArgs e)
@@ -132,7 +234,8 @@ namespace NinjaTrader.NinjaScript.AddOns
 			if (string.IsNullOrEmpty(_logPath))
 				return;
 
-			// The event arrives on a feed thread, so appends are serialised.
+			// Pushes arrive on a feed thread and the pull runs on a timer thread, so
+			// appends are serialised.
 			try
 			{
 				lock (FileGate)

@@ -248,6 +248,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 			// Between sessions only — see MaybeReloadNewsCalendar for why.
 			MaybeReloadNewsCalendar();
 
+			// The connection is often not up at State.DataLoaded, so the startup request
+			// can fail. Retry on early bars until one lands; PullRequested makes it a
+			// no-op afterwards, and this only ever runs while the strategy is realtime.
+			if (_nt8Calendar != null && !_nt8Calendar.PullRequested && State == State.Realtime && CurrentBar % 5 == 0)
+				RequestCalendarPull("retry");
+
 			UpdateTrailingStops();
 
 			MaintainOpenTrades(sessionEnd);
