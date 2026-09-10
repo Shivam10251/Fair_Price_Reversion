@@ -254,6 +254,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 			if (_nt8Calendar != null && !_nt8Calendar.PullRequested && State == State.Realtime && CurrentBar % 5 == 0)
 				RequestCalendarPull("retry");
 
+			// Breakeven first, then the trail: both only ever tighten, so whichever gives
+			// the better stop on this bar wins.
+			ApplyBreakEven();
 			UpdateTrailingStops();
 
 			MaintainOpenTrades(sessionEnd);

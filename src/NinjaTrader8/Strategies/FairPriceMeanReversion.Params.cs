@@ -212,7 +212,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[Display(Name = "Minimum reward:risk", Description = "A trade whose target is closer than this multiple of its stop distance is refused with R:R TOO LOW. 1.0 = never risk more than the trade can make. This gate does real work with a Fair Price target: an entry that breaks structure just outside the no-trade zone has very little room left to Fair Price, and that is exactly the trade this rejects. 0 = off.", GroupName = G_FIX, Order = 5)]
 		public double MinRewardRiskRatio { get; set; }
 
-		[Display(Name = "Trailing stop mode", Description = "Off: the stop stays at entry. R-step: at +1R the stop moves to breakeven, +2R to +1R, +3R to +2R, and so on (R = entry-to-initial-stop). Structure: the stop trails confirmed swings — down to each lower swing high for shorts, up to each higher swing low for longs, using the same pivot and SL-buffer settings as entries. Ignored under Fixed TP/SL.", GroupName = G_TRL, Order = 0)]
+		// ── 4d · TRAILING & BREAKEVEN ───────────────────────────────────
+		// Both only ever tighten the stop toward price, never loosen it.
+		[NinjaScriptProperty]
+		[Display(Name = "Move stop to breakeven at X R", Description = "Once the trade is X multiples of its own initial risk in profit, the stop jumps to the ENTRY FILL and stays there. 1 = breakeven at +1R, so a 25-point stop moves up once price is 25 points onside. 2 = breakeven at +2R. -1 (or any value at or below zero) turns it off. R is measured from the entry fill to the INITIAL stop, so later trailing cannot shrink R and pull the trigger forward. The move happens once and only ever tightens. Works with every stop mode, including a fixed-points stop, and is independent of the trailing stop mode below.", GroupName = G_TRL, Order = 0)]
+		public double BreakEvenAtR { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Trailing stop mode", Description = "Off: the stop stays at entry. R-step: at +1R the stop moves to breakeven, +2R to +1R, +3R to +2R, and so on (R = entry-to-initial-stop). Structure: the stop trails confirmed swings — down to each lower swing high for shorts, up to each higher swing low for longs, using the same pivot and SL-buffer settings as entries. Ignored under Fixed TP/SL.", GroupName = G_TRL, Order = 1)]
 		public FpTrailMode TrailMode { get; set; }
 
 		// ── 5 · RISK SIZING ───────────────────────────────────────────────────────
@@ -491,6 +498,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			FixedTakeProfitPoints = 40.0;
 			MinRewardRiskRatio    = 1.0;
 
+			BreakEvenAtR          = -1.0;   // off until the user asks for it
 			TrailMode             = FpTrailMode.Off;
 
 			RiskTargetUSD    = 100.0;

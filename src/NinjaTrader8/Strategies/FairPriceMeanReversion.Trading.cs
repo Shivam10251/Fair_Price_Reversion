@@ -684,6 +684,59 @@ namespace NinjaTrader.NinjaScript.Strategies
 		// Off. The stop is only ever moved in the tightening direction — a level that
 		// would loosen it is ignored — so the trail can never increase risk. Fixed
 		// TP/SL trades carry Trail = Off and are never touched here.
+		/// <summary>
+		/// Moves the stop to the entry fill once the trade is BreakEvenAtR multiples of
+		/// its initial risk onside.
+		///
+		/// R is measured from the entry FILL to the INITIAL stop, never to the current
+		/// one, so a stop that has already been trailed cannot shrink R and bring the
+		/// trigger forward. The move is one-way: if the stop already sits at or beyond
+		/// breakeven — because the trail got there first — it is left alone.
+		///
+		/// Deliberately independent of TrailMode. A fixed-points stop carries Trail = Off
+		/// and is skipped by the trail, but it still gets this, which is the whole point:
+		/// a constant-risk trade that has paid for itself should stop risking money.
+		///
+		/// Runs on the bar CLOSE, like everything else here (Calculate.OnBarClose), so the
+		/// trigger is judged on closes. A bar that spikes X R and closes back below it
+		/// does not move the stop.
+		/// </summary>
+		private void ApplyBreakEven()
+		{
+			if (BreakEvenAtR <= 0.0)
+				return;
+
+			for (int i = 0; i < _openTrades.Count; i++)
+			{
+				TradeRecord t = _openTrades[i];
+
+				if (!t.IsFilled || t.IsClosed || double.IsNaN(t.FillPrice))
+					continue;
+
+				double r = Math.Abs(t.FillPrice - t.InitialStopPrice);
+				if (r <= 0.0)
+					continue;
+
+				double favourable = (Close[0] - t.FillPrice) * t.Direction;
+				if (favourable < BreakEvenAtR * r)
+					continue;
+
+				double breakEven = Instrument.MasterInstrument.RoundToTickSize(t.FillPrice);
+
+				// Tighten only. A long's stop may only rise, a short's may only fall.
+				bool tighter = t.Direction > 0 ? breakEven > t.StopPrice : breakEven < t.StopPrice;
+				if (!tighter)
+					continue;
+
+				t.StopPrice = breakEven;
+				SetStopLoss(t.SignalName, CalculationMode.Price, breakEven, false);
+
+				Print(string.Format(CultureInfo.InvariantCulture,
+					"{0}  BREAKEVEN {1} SL -> {2:0.#####} (entry fill) after +{3:0.##}R, trigger {4:0.##}R",
+					Time[0].ToString("yyyy-MM-dd HH:mm:ss"), t.SignalName, breakEven, favourable / r, BreakEvenAtR));
+			}
+		}
+
 		private void UpdateTrailingStops()
 		{
 			for (int i = 0; i < _openTrades.Count; i++)
