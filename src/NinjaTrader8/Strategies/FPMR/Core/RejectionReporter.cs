@@ -10,7 +10,7 @@
 //  then the two risk gates that only exist in the NT8 build):
 //     SESSION -> NO FP -> NEWS WAIT -> WARMUP -> IN ZONE -> SIDE
 //     -> DAY LOSS -> DAY PROFIT -> DAY CAP -> SESS CAP
-//     -> IN TRADE -> EVT OFF -> EMA -> VWAP -> RISK -> RISK CAP
+//     -> IN TRADE -> EVT OFF -> EMA -> VWAP -> RISK -> RISK CAP -> R:R
 //
 //  The two daily P&L gates sit with the other budget gates and ahead of the
 //  filters: once the day's realised loss or profit limit is reached, WHY a
@@ -38,6 +38,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public bool VwapOk;
 		public bool RiskOk;      // risk > 0 and >= minimum stop distance
 		public bool RiskCapOk;   // sizing produced at least one contract within the hard cap
+		public bool RewardOk;    // reward/risk of the chosen target meets the minimum
 		public bool Reconciled;  // strategy is not stuck on an unmatched restart position
 	}
 
@@ -63,6 +64,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			if (!g.VwapOk)       return FpReject.Vwap;
 			if (!g.RiskOk)       return FpReject.Risk;
 			if (!g.RiskCapOk)    return FpReject.RiskCap;
+			if (!g.RewardOk)     return FpReject.RewardRisk;
 
 			return FpReject.None;
 		}
@@ -89,6 +91,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				case FpReject.Vwap:         return "VWAP";
 				case FpReject.Risk:         return "RISK";
 				case FpReject.RiskCap:      return "RISK CAP";
+				case FpReject.RewardRisk:   return "R:R TOO LOW";
 				case FpReject.Unreconciled: return "UNRECONCILED";
 				default:                    return "NONE";
 			}

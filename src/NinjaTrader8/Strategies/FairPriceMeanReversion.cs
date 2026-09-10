@@ -44,6 +44,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private SessionVwap           _vwap;
 		private NewsFairPriceResolver _news;
 		private NewsLoadResult        _newsLoad;
+		/// <summary>Live NinjaTrader economic calendar, the source of ACTUAL values.</summary>
+		private Nt8EconomicFeed       _nt8Calendar;
 
 		private EMA _emaFast;
 		private EMA _emaSlow;
@@ -149,7 +151,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
 			else if (State == State.Terminated)
 			{
+				// Order matters: the summary reports what the calendar delivered, and
+				// unsubscribing a STATIC event is not optional — see the helper.
 				PrintRunSummary();
+				UnsubscribeFromNt8Calendar();
 			}
 		}
 
@@ -219,12 +224,21 @@ namespace NinjaTrader.NinjaScript.Strategies
 			DetectAndFeedPivots();
 			_structure.ExpireSetups(CurrentBar, SetupValidityBars);
 
+			// A pre-session release that missed its forecast enters at the CLOSE of the
+			// news candle, which is this bar. It runs before the structure break so the
+			// news entry cannot be crowded out by a reversion signal on the same candle.
+			ProcessNewsContinuation();
+
 			double breakUp   = BreakConfirmation == FpBreakConfirm.Close ? Close[0] : High[0];
 			double breakDown = BreakConfirmation == FpBreakConfirm.Close ? Close[0] : Low[0];
 			StructureBreak brk = _structure.DetectBreak(breakUp, breakDown, CurrentBar);
 
-			if (brk.Occurred)
+			// While a continuation regime is armed, a BOS in its direction is a follow-on
+			// entry rather than a Fair Price reversion signal, and consumes the break.
+			if (brk.Occurred && !TryNewsContinuationFollowOn(brk))
 				EvaluateEntry(brk);
+
+			ExpireNewsContinuation(sessionEnd);
 
 			UpdateTrailingStops();
 
@@ -365,6 +379,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 				_ambiguousCount,
 				_tradeSeq > 0 ? 100.0 * _ambiguousCount / _tradeSeq : 0.0,
 				UseTickPrecision ? "High (1 tick)" : "Standard (stop assumed first)"));
+
+			// Whether the live calendar actually delivered anything is the difference
+			// between the news branch having run and having silently done nothing.
+			if (_nt8Calendar != null)
+				Print("FPMR news feed: " + _nt8Calendar.DescribeReceived(10));
 		}
 	}
 }

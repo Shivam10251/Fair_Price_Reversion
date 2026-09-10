@@ -55,6 +55,39 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 	/// </summary>
 	public enum FpTrailMode { Off, RStep, Structure }
 
+	/// <summary>
+	/// Where a trade's STOP comes from.
+	///   StructureCandle : the displacement candle's extreme, plus the SL buffer (the
+	///                     original model — risk varies with the candle).
+	///   FixedPoints     : a fixed number of points from the entry, so every trade
+	///                     carries the same risk and therefore the same position size.
+	/// </summary>
+	public enum FpStopMode { StructureCandle, FixedPoints }
+
+	/// <summary>
+	/// Where a trade's TARGET comes from.
+	///   Bands       : the distance-band system — NEAR takes the R:R multiple, FAR
+	///                 takes Fair Price (the original model).
+	///   FairPrice   : always the full reversion to Fair Price, offset by the
+	///                 take-profit zone. Whatever band the entry sat in.
+	///   FixedPoints : a fixed number of points from the entry.
+	///   RewardRatio : always the R:R multiple of the actual risk.
+	/// </summary>
+	public enum FpTargetMode { Bands, FairPrice, FixedPoints, RewardRatio }
+
+	/// <summary>
+	/// Where the ACTUAL released figure comes from. The calendar FILE supplies the
+	/// schedule and the forecast in every case — NinjaTrader exposes no queryable
+	/// list of upcoming releases, only a live push as each one prints.
+	///   Nt8CalendarThenFile : prefer NinjaTrader's live economic calendar push,
+	///                         fall back to an Actual column in the file.
+	///   FileOnly            : ignore the live feed. The only option that works in a
+	///                         backtest, where no push ever arrives.
+	///   Nt8CalendarOnly     : live push only; a release the feed never delivered is
+	///                         treated as having no actual.
+	/// </summary>
+	public enum FpNewsActualSource { Nt8CalendarThenFile, FileOnly, Nt8CalendarOnly }
+
 	/// <summary>Impact rating as parsed from the calendar file.</summary>
 	public enum FpNewsImpact { Unknown = 0, Low = 1, Medium = 2, High = 3 }
 
@@ -128,6 +161,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		Ema,         // EMA filter rejected it
 		Vwap,        // VWAP filter rejected it
 		Risk,        // risk <= 0 or below the minimum stop distance
+		RewardRisk,  // reward/risk of the chosen target is below the minimum
 		RiskCap,     // one contract would risk more than RiskHardCapUSD
 		Unreconciled // strategy restarted into an un-matched live position
 	}

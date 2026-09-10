@@ -62,7 +62,12 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				return r;
 			}
 
-			double basis = Math.Max(Math.Abs(ev.Forecast), Math.Abs(ev.Actual));
+			// EffectiveForecast / EffectiveActual, not the raw file columns: a live
+			// NinjaTrader calendar push supersedes whatever the file was written with.
+			double forecast = ev.EffectiveForecast;
+			double actual   = ev.EffectiveActual;
+
+			double basis = Math.Max(Math.Abs(forecast), Math.Abs(actual));
 
 			// Both values are exactly zero: identical, therefore no surprise.
 			if (basis <= double.Epsilon)
@@ -72,7 +77,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				return r;
 			}
 
-			r.DeviationPercent = 100.0 * Math.Abs(ev.Actual - ev.Forecast) / basis;
+			r.DeviationPercent = 100.0 * Math.Abs(actual - forecast) / basis;
 
 			double tol  = Math.Max(0.0, expectedTolerancePercent);
 			double big  = Math.Max(tol, unexpectedThresholdPercent);

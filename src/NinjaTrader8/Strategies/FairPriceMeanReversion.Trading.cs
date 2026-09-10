@@ -26,6 +26,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private readonly List<TradeRecord>               _openTrades = new List<TradeRecord>();
 		private readonly List<TradeRecord>               _justClosed = new List<TradeRecord>();
 
+		// ── News continuation regime ────────────────────────────────────
+		// Armed by a pre-session release that missed its forecast, cleared at the end of
+		// the session it belongs to. While armed the strategy trades WITH that release.
+		private bool     _contActive;
+		private int      _contDirection;
+		private int      _contSessionIndex;
+		private DateTime _contSessionOpen;
+		private int      _contTradesTaken;
+
 		private int CountOpenTrades() { return _openTrades.Count; }
 
 		private void DropAllOpenTrades(string reason)
@@ -44,23 +53,23 @@ namespace NinjaTrader.NinjaScript.Strategies
 			int    dir   = brk.Direction;
 			double entry = Close[0];
 
-			// Stop: a fixed number of points from the entry, or the displacement
-			// candle's extreme. Fixed TP/SL, when on, overrides the structure stop.
-			double stop = UseFixedTpSl
-				? (dir < 0
-					? Instrument.MasterInstrument.RoundToTickSize(entry + FixedStopLossPoints)
-					: Instrument.MasterInstrument.RoundToTickSize(entry - FixedStopLossPoints))
-				: (dir < 0
-					? Instrument.MasterInstrument.RoundToTickSize(High[0] + StopBufferTicks * _tickSize)
-					: Instrument.MasterInstrument.RoundToTickSize(Low[0]  - StopBufferTicks * _tickSize));
-
+			double stop = StopFor(dir, entry);
 			double risk = dir < 0 ? stop - entry : entry - stop;
 
-			// Which distance band the entry sits in. Fixed TP/SL bypasses the band
-			// system for both gating (no "too far" limit) and target selection.
-			FpSetupBand band = UseFixedTpSl
-				? FpSetupBand.Near
-				: SetupBands.Classify(entry, _fairPrice, _hasFair, ZonePercent, Band1Percent, Band2Percent);
+			// Which distance band the entry sits in. The band still gates every entry —
+			// inside the zone is no trade, beyond Band 2 is TOO FAR — whatever the target
+			// mode is. Only the CHOICE OF TARGET depends on the mode.
+			FpSetupBand band = SetupBands.Classify(entry, _fairPrice, _hasFair, ZonePercent, Band1Percent, Band2Percent);
+
+			// The reward has to be known before the trade is gated, because "the target is
+			// nearer than the stop" is itself a rejection. TargetFor returns NaN when no
+			// usable target exists, which fails the same gate.
+			bool   targetIsFair;
+			double target = TargetFor(dir, entry, risk, band, out targetIsFair);
+			double reward = double.IsNaN(target) ? double.NaN : (dir < 0 ? entry - target : target - entry);
+			bool   rewardOk = !double.IsNaN(reward)
+				&& reward >= _tickSize
+				&& (MinRewardRiskRatio <= 0.0 || (risk > 0.0 && reward / risk >= MinRewardRiskRatio));
 
 			SizingResult sizing = RiskSizer.Size(entry, stop, _pointValue,
 				RiskTargetUSD, RiskToleranceUSD, RiskHardCapUSD, MaxContracts);
@@ -84,7 +93,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 				EmaOk        = dir < 0 ? EmaOkShort() : EmaOkLong(),
 				VwapOk       = dir < 0 ? VwapOkShort() : VwapOkLong(),
 				RiskOk       = risk > 0 && risk >= MinStopTicks * _tickSize,
-				RiskCapOk    = sizing.Accepted
+				RiskCapOk    = sizing.Accepted,
+				RewardOk     = rewardOk
 			};
 
 			FpReject reason = RejectionReporter.FirstFailure(g);
@@ -95,7 +105,93 @@ namespace NinjaTrader.NinjaScript.Strategies
 				return;
 			}
 
-			SubmitEntry(dir, brk.Event, entry, stop, risk, sizing, band);
+			SubmitEntry(dir, brk.Event, entry, stop, risk, target, targetIsFair, sizing, band, "FPMR");
+		}
+
+		/// <summary>
+		/// The stop price for a candidate entry.
+		///   FixedPoints     : a constant distance, so every trade risks the same dollars
+		///                     and the risk sizer returns the same contract count.
+		///   StructureCandle : the displacement candle's own extreme plus the buffer.
+		/// </summary>
+		private double StopFor(int dir, double entry)
+		{
+			if (StopMode == FpStopMode.FixedPoints)
+				return Instrument.MasterInstrument.RoundToTickSize(
+					dir < 0 ? entry + FixedStopLossPoints : entry - FixedStopLossPoints);
+
+			return Instrument.MasterInstrument.RoundToTickSize(
+				dir < 0 ? High[0] + StopBufferTicks * _tickSize
+					: Low[0]  - StopBufferTicks * _tickSize);
+		}
+
+		/// <summary>
+		/// Fair Price pulled in by the take-profit zone: the target sits
+		/// TakeProfitZonePoints SHORT of Fair Price, on the entry's own side of it.
+		/// A short entered above Fair Price targets FairPrice + zone; a long entered
+		/// below targets FairPrice - zone. Zone 0 targets Fair Price exactly.
+		/// </summary>
+		private double FairPriceTarget(int dir)
+		{
+			if (!_hasFair)
+				return double.NaN;
+
+			// dir < 0 is a short, which is heading DOWN toward Fair Price from above, so
+			// stopping short of it means stopping ABOVE it.
+			return dir < 0 ? _fairPrice + TakeProfitZonePoints
+				     : _fairPrice - TakeProfitZonePoints;
+		}
+
+		/// <summary>
+		/// The target price for a candidate entry, or NaN when the mode cannot produce
+		/// a usable one. Rounded to tick here so the reward the R:R gate judges is the
+		/// reward the bracket will actually carry.
+		/// </summary>
+		private double TargetFor(int dir, double entry, double risk, FpSetupBand band, out bool targetIsFair)
+		{
+			targetIsFair = false;
+			double raw;
+
+			switch (TargetMode)
+			{
+				case FpTargetMode.FixedPoints:
+					raw = dir < 0 ? entry - FixedTakeProfitPoints : entry + FixedTakeProfitPoints;
+					break;
+
+				case FpTargetMode.RewardRatio:
+					raw = dir < 0 ? entry - risk * RewardRatio : entry + risk * RewardRatio;
+					break;
+
+				case FpTargetMode.FairPrice:
+					// The reversion target only makes sense while the trade is heading BACK
+					// toward Fair Price. Under BOS continuation it runs away from it, so Fair
+					// Price would sit behind the entry and never fill - use the R:R multiple.
+					if (EntryModel == FpEntryModel.BosContinuation)
+					{
+						raw = dir < 0 ? entry - risk * RewardRatio : entry + risk * RewardRatio;
+						break;
+					}
+					raw          = FairPriceTarget(dir);
+					targetIsFair = true;
+					break;
+
+				default:   // Bands - the original model
+					if (band == FpSetupBand.Far && EntryModel != FpEntryModel.BosContinuation)
+					{
+						raw          = FairPriceTarget(dir);
+						targetIsFair = true;
+					}
+					else
+					{
+						raw = dir < 0 ? entry - risk * RewardRatio : entry + risk * RewardRatio;
+					}
+					break;
+			}
+
+			if (double.IsNaN(raw))
+				return double.NaN;
+
+			return Instrument.MasterInstrument.RoundToTickSize(raw);
 		}
 
 		/// <summary>
@@ -350,50 +446,28 @@ namespace NinjaTrader.NinjaScript.Strategies
 				Time[0].ToString("yyyy-MM-dd HH:mm:ss"), label, dir < 0 ? "bearish" : "bullish", extra));
 		}
 
+		/// <summary>
+		/// Places one bracketed entry. The target has already been chosen and gated by
+		/// the caller, because "the target is nearer than the stop" is a rejection and
+		/// has to be decided alongside every other gate rather than after them.
+		/// </summary>
 		private void SubmitEntry(int dir, FpBreakEvent evt, double entry, double stop, double risk,
-		                         SizingResult sizing, FpSetupBand band)
+		                        double target, bool targetIsFair, SizingResult sizing, FpSetupBand band,
+		                        string signalPrefix)
 		{
-			// Take-profit selection:
-			//   Fixed TP/SL on -> a fixed number of points from the entry.
-			//   FAR band       -> Fair Price itself (target the full reversion).
-			//   NEAR band      -> the Band 1 risk/reward multiple.
-			//
-			// The FAR band's Fair Price target only makes sense while the trade is
-			// heading back toward Fair Price. Under the BOS-continuation model it runs
-			// away from it, so Fair Price would sit behind the entry and never fill —
-			// a FAR setup there takes the R:R multiple like a NEAR one.
-			double rawTarget;
-			bool   targetIsFair;
-
-			if (UseFixedTpSl)
-			{
-				rawTarget    = dir < 0 ? entry - FixedTakeProfitPoints : entry + FixedTakeProfitPoints;
-				targetIsFair = false;
-			}
-			else if (band == FpSetupBand.Far && EntryModel != FpEntryModel.BosContinuation)
-			{
-				rawTarget    = _fairPrice;
-				targetIsFair = true;
-			}
-			else
-			{
-				rawTarget    = dir < 0 ? entry - risk * RewardRatio : entry + risk * RewardRatio;
-				targetIsFair = false;
-			}
-
-			double target = Instrument.MasterInstrument.RoundToTickSize(rawTarget);
-
 			// After rounding the target must still sit at least one tick beyond the
 			// signal price, otherwise the bracket is nonsense.
-			bool targetViable = dir < 0 ? target <= entry - _tickSize : target >= entry + _tickSize;
+			bool targetViable = !double.IsNaN(target)
+				&& (dir < 0 ? target <= entry - _tickSize : target >= entry + _tickSize);
+
 			if (!targetViable)
 			{
-				RecordRejection(dir, FpReject.Risk, sizing);
+				RecordRejection(dir, FpReject.RewardRisk, sizing);
 				return;
 			}
 
 			_tradeSeq++;
-			string signal = "FPMR" + _tradeSeq.ToString(CultureInfo.InvariantCulture);
+			string signal = signalPrefix + _tradeSeq.ToString(CultureInfo.InvariantCulture);
 
 			TradeRecord rec = new TradeRecord
 			{
@@ -407,7 +481,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 				TargetPrice       = target,
 				Quantity          = sizing.Quantity,
 				TargetIsFairPrice = targetIsFair,
-				Trail             = UseFixedTpSl ? FpTrailMode.Off : TrailMode,
+				// A fixed-distance stop is a risk statement, not a structure level, so a
+				// trail that widens the plan would defeat the point of the constant size.
+				Trail             = StopMode == FpStopMode.FixedPoints ? FpTrailMode.Off : TrailMode,
 				MaxFavorablePoints = 0.0,
 				EntryBarIndex     = CurrentBar,
 				EntryBarTime   = Time[0],
@@ -429,10 +505,177 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_tradesDay++;
 			_tradesSession++;
 
-			Print(string.Format(CultureInfo.InvariantCulture, "{0}  ENTRY {1}  |  {2}",
+			double reward = dir < 0 ? entry - target : target - entry;
+
+			Print(string.Format(CultureInfo.InvariantCulture, "{0}  ENTRY {1}  |  R:R {2:0.##}  |  {3}",
 				Time[0].ToString("yyyy-MM-dd HH:mm:ss"),
 				rec.Describe(),
+				risk > 0 ? reward / risk : 0.0,
 				sizing.Describe(RiskTargetUSD, RiskToleranceUSD, RiskHardCapUSD)));
+		}
+
+		// ── News continuation ───────────────────────────────────────
+		//
+		// A PRE-SESSION release whose actual missed its forecast by more than the
+		// surprise threshold. The move is treated as legitimate repricing, so the first
+		// trade goes WITH the news candle rather than fading it: entered at that
+		// candle's close, on a fixed stop and a fixed target.
+		//
+		// This entry deliberately bypasses the Fair Price gates — zone, band, side,
+		// structure — because there IS no Fair Price for this session yet; that is the
+		// whole reason the branch exists. It still respects every RISK gate: the daily
+		// loss budget, the trade caps, the one-trade-at-a-time rule and the sizer.
+
+		/// <summary>Consumes a continuation signal produced on this bar, if any.</summary>
+		private void ProcessNewsContinuation()
+		{
+			if (_news == null || !NewsTradeContinuation)
+				return;
+
+			NewsContinuationSignal sig = _news.TakeContinuation();
+			if (sig == null || sig.Direction == 0)
+				return;
+
+			// Arm the regime first: even if this entry is refused, the follow-on rule
+			// was still decided by this release.
+			_contActive       = true;
+			_contDirection    = sig.Direction;
+			_contSessionIndex = sig.SessionIndex;
+			_contSessionOpen  = sig.SessionOpenTz;
+			_contTradesTaken  = 0;
+
+			Print(string.Format(CultureInfo.InvariantCulture,
+				"{0}  NEWS CONTINUATION armed {1} — {2} missed its forecast by {3:0.##}%. Entering at the news candle close.",
+				Time[0].ToString("yyyy-MM-dd HH:mm:ss"),
+				sig.Direction > 0 ? "LONG" : "SHORT",
+				sig.Event == null ? "release" : sig.Event.Title,
+				sig.SurpriseResult == null ? double.NaN : sig.SurpriseResult.DeviationPercent));
+
+			SubmitFixedTrade(sig.Direction, Close[0],
+				NewsContinuationStopPoints,
+				NewsContinuationTargetPoints,
+				double.NaN, "NEWSCONT");
+		}
+
+		/// <summary>
+		/// A BOS follow-on while the continuation regime is armed: same direction as the
+		/// news candle, on the follow-on stop and reward. Returns true when it consumed
+		/// the break, so the normal Fair Price path does not also act on it.
+		/// </summary>
+		private bool TryNewsContinuationFollowOn(StructureBreak brk)
+		{
+			if (!_contActive || !NewsContinuationAllowBosFollowOn)
+				return false;
+
+			// Only a BOS, only in the news candle's direction.
+			if (brk.Event != FpBreakEvent.BOS || brk.Direction != _contDirection)
+				return false;
+
+			// And only inside the session the release was armed for. A regime that
+			// survived into a later session must not keep trading that direction.
+			if (_effSession != _contSessionIndex)
+				return false;
+
+			if (_contTradesTaken >= Math.Max(1, NewsContinuationMaxTrades))
+				return false;
+
+			SubmitFixedTrade(brk.Direction, Close[0],
+				NewsContinuationFollowOnStopPoints,
+				double.NaN,
+				NewsContinuationFollowOnRewardRatio, "NEWSBOS");
+
+			return true;
+		}
+
+		/// <summary>
+		/// Submits a trade whose stop is a fixed number of points and whose target is
+		/// either a fixed number of points or a reward multiple of that stop. Shared by
+		/// the news-candle entry and its BOS follow-ons.
+		///
+		/// Pass targetPoints OR rewardRatio; the other must be NaN.
+		/// </summary>
+		private void SubmitFixedTrade(int dir, double entry, double stopPoints, double targetPoints,
+		                              double rewardRatio, string signalPrefix)
+		{
+			if (stopPoints <= 0.0)
+			{
+				Print("FPMR: " + signalPrefix + " refused — stop distance is not positive.");
+				return;
+			}
+
+			double stop = Instrument.MasterInstrument.RoundToTickSize(
+				dir < 0 ? entry + stopPoints : entry - stopPoints);
+
+			double risk = dir < 0 ? stop - entry : entry - stop;
+
+			double rewardPoints = !double.IsNaN(targetPoints) ? targetPoints : risk * rewardRatio;
+
+			double target = Instrument.MasterInstrument.RoundToTickSize(
+				dir < 0 ? entry - rewardPoints : entry + rewardPoints);
+
+			SizingResult sizing = RiskSizer.Size(entry, stop, _pointValue,
+				RiskTargetUSD, RiskToleranceUSD, RiskHardCapUSD, MaxContracts);
+
+			// The Fair Price gates are deliberately absent — see the note above. Every
+			// risk and budget gate still applies.
+			GateState g = new GateState
+			{
+				Reconciled    = !_unreconciled,
+				InSession     = true,
+				HasFairPrice  = true,
+				WarmupDone    = true,
+				InZone        = false,
+				DistanceOk    = true,
+				NewsReady     = true,
+				SideOk        = true,
+				EventOk       = true,
+				EmaOk         = true,
+				VwapOk        = true,
+				DailyLossOk   = !_dayLossHit && LossHeadroomFor(sizing.ResultingRisk),
+				DailyProfitOk = !_dayProfitHit,
+				DayCapOk      = MaxTradesPerDay     == 0 || _tradesDay     < MaxTradesPerDay,
+				SessionCapOk  = MaxTradesPerSession == 0 || _tradesSession < MaxTradesPerSession,
+				FlatOk        = !OnlyOneOpenTrade || (_openTrades.Count == 0 && Position.MarketPosition == MarketPosition.Flat),
+				RiskOk        = risk > 0 && risk >= MinStopTicks * _tickSize,
+				RiskCapOk     = sizing.Accepted,
+				RewardOk      = rewardPoints >= _tickSize
+				                && (MinRewardRiskRatio <= 0.0 || (risk > 0.0 && rewardPoints / risk >= MinRewardRiskRatio))
+			};
+
+			FpReject reason = RejectionReporter.FirstFailure(g);
+
+			if (reason != FpReject.None)
+			{
+				Print(string.Format(CultureInfo.InvariantCulture, "{0}  {1} REFUSED — {2}{3}",
+					Time[0].ToString("yyyy-MM-dd HH:mm:ss"), signalPrefix, RejectionReporter.Label(reason),
+					reason == FpReject.RiskCap || reason == FpReject.Risk
+						? "  " + sizing.Describe(RiskTargetUSD, RiskToleranceUSD, RiskHardCapUSD)
+						: string.Empty));
+				return;
+			}
+
+			int before = _tradeSeq;
+			SubmitEntry(dir, FpBreakEvent.None, entry, stop, risk, target, false, sizing, FpSetupBand.Near, signalPrefix);
+
+			if (_tradeSeq > before)
+				_contTradesTaken++;
+		}
+
+		/// <summary>Clears the continuation regime once its session has finished.</summary>
+		private void ExpireNewsContinuation(bool sessionEnded)
+		{
+			if (!_contActive || !sessionEnded)
+				return;
+
+			if (VerboseLogging)
+				Print(string.Format(CultureInfo.InvariantCulture,
+					"{0}  NEWS CONTINUATION disarmed — session {1} (opened {2:yyyy-MM-dd HH:mm}) ended after {3} trade(s).",
+					Time[0].ToString("yyyy-MM-dd HH:mm:ss"), _contSessionIndex, _contSessionOpen, _contTradesTaken));
+
+			_contActive       = false;
+			_contDirection    = 0;
+			_contSessionIndex = 0;
+			_contTradesTaken  = 0;
 		}
 
 		// ── Trailing stops ────────────────────────────────────────────────────────

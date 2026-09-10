@@ -21,12 +21,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private const string G_FP   = "2 · Fair Price";
 		private const string G_MS   = "3 · Market Structure";
 		private const string G_TM   = "4 · Trade Management";
-		private const string G_FIX  = "4c · Fixed TP/SL";
+		private const string G_FIX  = "4c · Stop & Target";
 		private const string G_TRL  = "4d · Trailing Stop";
 		private const string G_RISK = "5 · Risk Sizing";
 		private const string G_LIM  = "5b · Daily Limits";
 		private const string G_NEWS = "6 · News Fair Price";
 		private const string G_NEWX = "6b · News Surprise";
+		private const string G_NEWC = "6c · News Continuation";
 		private const string G_FLT  = "7 · Filters";
 		private const string G_BT   = "9 · Backtest Fidelity";
 		private const string G_DBG  = "10 · Debug";
@@ -184,23 +185,33 @@ namespace NinjaTrader.NinjaScript.Strategies
 		// fixed number of POINTS from the entry, replacing the structure stop and the
 		// distance-band targets for every trade. Entry gating is unchanged.
 		[NinjaScriptProperty]
-		[Display(Name = "Use fixed TP/SL (points)", Description = "Master override. ON: every trade takes a fixed points stop and a fixed points target from the entry, ignoring the structure stop, the band targets and the Band 1 R:R. OFF: the percentage-band system decides the target and the displacement candle decides the stop.", GroupName = G_FIX, Order = 0)]
-		public bool UseFixedTpSl { get; set; }
+		[Display(Name = "Stop loss mode", Description = "Where the STOP comes from. FixedPoints: a fixed number of points from the entry, so every trade carries the same risk and therefore the same position size — this is what makes the $ risk target produce a constant contract count. StructureCandle: the displacement candle's own extreme plus the SL buffer, so risk varies candle by candle.", GroupName = G_FIX, Order = 0)]
+		public FpStopMode StopMode { get; set; }
 
 		[NinjaScriptProperty]
 		[Range(0.0, double.MaxValue)]
-		[Display(Name = "Fixed stop loss (points)", Description = "Stop distance in points from the entry, used only when Fixed TP/SL is on. Must be greater than zero.", GroupName = G_FIX, Order = 1)]
+		[Display(Name = "Fixed stop loss (points)", Description = "Stop distance in points from the entry, used when Stop loss mode is FixedPoints. On MNQ 1 point = $2, so 25 points = $50 per contract.", GroupName = G_FIX, Order = 1)]
 		public double FixedStopLossPoints { get; set; }
 
 		[NinjaScriptProperty]
+		[Display(Name = "Take profit mode", Description = "Where the TARGET comes from. FairPrice: the full reversion back to Fair Price, pulled in by the take-profit zone below — the mean-reversion default. Bands: the original distance-band system (NEAR takes the R:R multiple, FAR takes Fair Price). FixedPoints: a fixed number of points. RewardRatio: always the R:R multiple of the actual risk.", GroupName = G_FIX, Order = 2)]
+		public FpTargetMode TargetMode { get; set; }
+
+		[NinjaScriptProperty]
 		[Range(0.0, double.MaxValue)]
-		[Display(Name = "Fixed take profit (points)", Description = "Target distance in points from the entry, used only when Fixed TP/SL is on. Must be greater than zero.", GroupName = G_FIX, Order = 2)]
+		[Display(Name = "Take profit ZONE (points from Fair Price)", Description = "Pulls the target this many points SHORT of Fair Price, onto the near edge of a zone around it. 0 = target Fair Price exactly. 5 = a short entered above Fair Price targets FairPrice + 5, a long entered below targets FairPrice - 5. Applies to every Fair Price target, in the FairPrice and Bands modes alike, and exists because the last few points into the mean are the least reliable.", GroupName = G_FIX, Order = 3)]
+		public double TakeProfitZonePoints { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Fixed take profit (points)", Description = "Target distance in points from the entry, used when Take profit mode is FixedPoints.", GroupName = G_FIX, Order = 4)]
 		public double FixedTakeProfitPoints { get; set; }
 
-		// ── 4d · TRAILING STOP ────────────────────────────────────────────────────
-		// Applies to the percentage-band setups (Near and Far). Ignored when Fixed
-		// TP/SL is on. The stop only ever tightens toward price, never loosens.
 		[NinjaScriptProperty]
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Minimum reward:risk", Description = "A trade whose target is closer than this multiple of its stop distance is refused with R:R TOO LOW. 1.0 = never risk more than the trade can make. This gate does real work with a Fair Price target: an entry that breaks structure just outside the no-trade zone has very little room left to Fair Price, and that is exactly the trade this rejects. 0 = off.", GroupName = G_FIX, Order = 5)]
+		public double MinRewardRiskRatio { get; set; }
+
 		[Display(Name = "Trailing stop mode", Description = "Off: the stop stays at entry. R-step: at +1R the stop moves to breakeven, +2R to +1R, +3R to +2R, and so on (R = entry-to-initial-stop). Structure: the stop trails confirmed swings — down to each lower swing high for shorts, up to each higher swing low for longs, using the same pivot and SL-buffer settings as entries. Ignored under Fixed TP/SL.", GroupName = G_TRL, Order = 0)]
 		public FpTrailMode TrailMode { get; set; }
 
@@ -295,6 +306,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public bool NewsReversionFromNewsTime { get; set; }
 
 		[NinjaScriptProperty]
+		[Display(Name = "Actual value source", Description = "Where the RELEASED figure comes from. The calendar FILE is always the schedule and the forecast — NinjaTrader exposes no queryable list of upcoming releases, only a live push as each one prints. Nt8CalendarThenFile: use NinjaTrader's live economic calendar, falling back to an Actual column in the file. FileOnly: ignore the live feed — the only setting that works in a BACKTEST, where no push ever arrives. Nt8CalendarOnly: live push only.", GroupName = G_NEWS, Order = 12)]
+		public FpNewsActualSource NewsActualSource { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Handle news INSIDE the session", Description = "On: a qualifying release that lands inside an open session is acted on too. If it MATCHED its forecast the news candle's open replaces the session Fair Price for the rest of the session; if it MISSED, nothing happens — no mid-session continuation — and the session's own Fair Price stands. Off: only releases BEFORE the session open are considered.", GroupName = G_NEWS, Order = 13)]
+		public bool NewsHandleInSession { get; set; }
+
+		[NinjaScriptProperty]
 		[Display(Name = "News Fair Price expires at session open", Description = "On: a news Fair Price is valid only BEFORE the session opens (for the pre-session reversion window). At the session open it is discarded and the session's own first-candle Fair Price governs the rest of the session. Off: the news Fair Price governs the entire session (the original behaviour).", GroupName = G_NEWS, Order = 11)]
 		public bool NewsFairPriceExpiresAtSessionOpen { get; set; }
 
@@ -342,6 +361,43 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[Display(Name = "Allow continuation on a large surprise", Description = "ASSUMPTION, defaulted OFF — you left this question unanswered. On: after a LARGE surprise the strategy trades WITH the displacement instead of fading it, inverting its normal side rule. Off: it waits for the new Fair Price and reverts to that.", GroupName = G_NEWX, Order = 7)]
 		public bool NewsAllowContinuation { get; set; }
 
+		// ── 6c · NEWS CONTINUATION ────────────────────────────────────────────────
+		// Fires only for a PRE-SESSION release whose actual missed its forecast by more
+		// than the surprise threshold. The market repriced for a real reason, so the
+		// first trade goes WITH the news candle instead of fading it.
+		[NinjaScriptProperty]
+		[Display(Name = "Trade news continuation", Description = "On: a pre-session release that MISSES its forecast by more than the surprise threshold produces an immediate entry at the CLOSE of the news candle, in the direction of that candle. Off: a missed forecast instead waits for a post-news consolidation to name a new Fair Price, and no trade is taken from the news candle itself.", GroupName = G_NEWC, Order = 0)]
+		public bool NewsTradeContinuation { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Continuation stop loss (points)", Description = "Stop distance for the news-candle continuation entry, in points from the entry.", GroupName = G_NEWC, Order = 1)]
+		public double NewsContinuationStopPoints { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Continuation take profit (points)", Description = "Target distance for the news-candle continuation entry. Equal to the stop = a 1:1 trade.", GroupName = G_NEWC, Order = 2)]
+		public double NewsContinuationTargetPoints { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(1, int.MaxValue)]
+		[Display(Name = "Continuation trades per release", Description = "How many trades one continuation release may produce in total, counting the news-candle entry itself. 1 = the news-candle entry and nothing more. Raise it to allow the BOS follow-ons below.", GroupName = G_NEWC, Order = 3)]
+		public int NewsContinuationMaxTrades { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Allow BOS follow-on entries", Description = "On: after the news-candle entry, further entries are taken on each BOS in the SAME direction as the news candle — a bullish BOS after a green news candle, a bearish BOS after a red one — until the trade budget above is spent or the session ends. These use the follow-on stop and reward below, NOT the news-candle figures. Off: the news candle produces exactly one trade.", GroupName = G_NEWC, Order = 4)]
+		public bool NewsContinuationAllowBosFollowOn { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Follow-on stop loss (points)", Description = "Stop distance for a BOS follow-on entry, in points from the entry.", GroupName = G_NEWC, Order = 5)]
+		public double NewsContinuationFollowOnStopPoints { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Follow-on reward:risk", Description = "Target for a BOS follow-on entry, as a multiple of its stop distance.", GroupName = G_NEWC, Order = 6)]
+		public double NewsContinuationFollowOnRewardRatio { get; set; }
+
 		// ── 7 · FILTERS ───────────────────────────────────────────────────────────
 		[NinjaScriptProperty]
 		[Display(Name = "Use EMA filter", Description = "Master switch. BOTH EMAs enabled = crossover rule (long needs EMA1 > EMA2). ONE enabled = price-vs-EMA rule (long needs close above it). Neither = no effect.", GroupName = G_FLT, Order = 0)]
@@ -388,12 +444,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			// Windows are typed in IST as their SUMMER (US-DST) times. The winter
 			// equivalents are derived, never typed:
-			//   1900-1930 IST summer = 0930-1000 New York = 2000-2030 IST winter
+			//   1930-2100 IST summer = 1000-1130 New York = 2030-2200 IST winter
 			SessionTimeZoneId         = "Asia/Kolkata";
 			AutoAdjustForUsDst        = true;
 			BarTimeZoneOverrideId     = string.Empty;
 			Session1Enabled           = true;
-			Session1Window            = "1900-1930";
+			Session1Window            = "1930-2100";
 			Session2Enabled           = false;
 			Session2Window            = "2000-2100";
 			Session3Enabled           = false;
@@ -412,7 +468,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			EntryModel                       = FpEntryModel.Reversion;
 			RewardRatio                      = 1.5;
-			MaxTradesPerDay                  = 3;
+			MaxTradesPerDay                  = 0;   // unlimited - the $700 daily loss limit is what stops the day
 			MaxTradesPerSession              = 0;
 			SetupValidityBars                = 30;
 			OnlyOneOpenTrade                 = true;
@@ -425,9 +481,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 			MinBarsBeforeFirstTrade          = 3;
 			SameBarPriority                  = FpSameBarPriority.SlFirst;
 
-			UseFixedTpSl          = false;
-			FixedStopLossPoints   = 20.0;
+			// Mean reversion, sized off a constant stop: a 25-point stop on MNQ is
+			// $50 a contract, so the $100 risk target buys exactly 2 contracts every
+			// time. The target is the reversion to Fair Price itself.
+			StopMode              = FpStopMode.FixedPoints;
+			FixedStopLossPoints   = 25.0;
+			TargetMode            = FpTargetMode.FairPrice;
+			TakeProfitZonePoints  = 0.0;
 			FixedTakeProfitPoints = 40.0;
+			MinRewardRiskRatio    = 1.0;
 
 			TrailMode             = FpTrailMode.Off;
 
@@ -437,17 +499,27 @@ namespace NinjaTrader.NinjaScript.Strategies
 			MaxContracts     = 10;
 
 			UseNewsTrading        = true;
-			UseNewsFairPrice      = false;
-			NewsFilePath          = string.Empty;
-			NewsFileTimeZoneId    = "America/New_York";
-			NewsCsvDateFormat     = string.Empty;
-			NewsLookbackHours     = 1.0;
+			UseNewsFairPrice      = true;
+			NewsFilePath          = @"C:\Users\DELL\Desktop\Projects\Fair_Price_Reversion_P\config\ff_calendar_thisweek.csv";
+			// The supplied ForexFactory export is written in UTC, not New York: its USD
+			// PPI row reads 12:30pm, and PPI releases at 08:30 New York = 12:30 UTC. The
+			// NFIB row at 10:00 = 06:00 New York confirms it. Set this wrong and every
+			// news Fair Price lands on the wrong candle.
+			NewsFileTimeZoneId    = "UTC";
+			NewsCsvDateFormat     = "MM-dd-yyyy";
+			// 1930 IST session open, 1800 IST release (1230 UTC) = 1.5h apart. The old
+			// one-hour lookback would have missed it entirely.
+			NewsLookbackHours     = 2.0;
 			NewsImpactFilter      = FpNewsImpactFilter.HighOnly;
 			NewsCurrencyFilter    = "USD";
 			NewsMultipleEventRule = FpNewsMultipleEventRule.First;
 			NewsTradingStart      = FpNewsTradingStart.AfterSessionOpen;
 			NewsReversionFromNewsTime         = false;
-			NewsFairPriceExpiresAtSessionOpen = true;
+			// The news candle's open governs the WHOLE session; the session's own
+			// first-candle Fair Price is discarded, as specified.
+			NewsFairPriceExpiresAtSessionOpen = false;
+			NewsActualSource                  = FpNewsActualSource.Nt8CalendarThenFile;
+			NewsHandleInSession               = true;
 
 			UseEmaFilter   = false;
 			UseEma1        = true;
@@ -456,23 +528,37 @@ namespace NinjaTrader.NinjaScript.Strategies
 			EmaSlowLength  = 21;
 			UseVwapFilter  = false;
 
-			UseDailyPnlLimits   = false;
-			DailyLossLimitUSD   = 400.0;
-			DailyProfitLimitUSD = 600.0;
+			UseDailyPnlLimits   = true;
+			DailyLossLimitUSD   = 700.0;
+			DailyProfitLimitUSD = 0.0;    // no profit cap was asked for
 			FlattenOnDailyLimit = false;
 
-			UseNewsSurprise                = false;
-			NewsExpectedTolerancePercent   = 5.0;
-			NewsUnexpectedThresholdPercent = 25.0;
-			NewsUnknownRule                = FpNewsUnknownRule.TreatAsExpected;
+			// ONE threshold, not two: at or below it the release was priced in and the
+			// strategy reverts; above it the market repriced and the strategy continues.
+			// Passing the same number for both collapses the middle "partial" band to
+			// nothing, so there are exactly the two branches specified.
+			UseNewsSurprise                = true;
+			NewsExpectedTolerancePercent   = 4.0;
+			NewsUnexpectedThresholdPercent = 4.0;
+			// Without an actual there is nothing to judge, and assuming "priced in"
+			// would trade a reversion off a level the release may have invalidated.
+			NewsUnknownRule                = FpNewsUnknownRule.SkipEvent;
 			NewsConsolidationBars          = 5;
 			NewsConsolidationRangeTicks    = 40.0;
 			NewsConsolidationSearchBars    = 60;
-			NewsAllowContinuation          = false;
+			NewsAllowContinuation          = true;
+
+			NewsTradeContinuation               = true;
+			NewsContinuationStopPoints          = 40.0;
+			NewsContinuationTargetPoints        = 40.0;   // 1:1
+			NewsContinuationMaxTrades           = 1;
+			NewsContinuationAllowBosFollowOn    = false;
+			NewsContinuationFollowOnStopPoints  = 25.0;
+			NewsContinuationFollowOnRewardRatio = 1.5;
 
 			UseTickPrecision = true;
 
-			VerboseLogging   = false;
+			VerboseLogging   = true;
 			PrintNewsReports = true;
 		}
 	}

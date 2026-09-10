@@ -88,13 +88,23 @@ namespace NinjaTrader.NinjaScript.Strategies
 				    + "entries' says, and so is any break pointing back toward Fair Price. FAR-band setups take "
 				    + "the R:R target, because Fair Price now sits behind a trade running away from it.");
 
-			if (UseFixedTpSl)
-			{
-				if (FixedStopLossPoints <= 0.0)
-					Fail("Fixed stop loss (points) must be greater than zero when Fixed TP/SL is on.");
-				else if (FixedTakeProfitPoints <= 0.0)
-					Fail("Fixed take profit (points) must be greater than zero when Fixed TP/SL is on.");
-			}
+			if (StopMode == FpStopMode.FixedPoints && FixedStopLossPoints <= 0.0)
+				Fail("Fixed stop loss (points) must be greater than zero when the stop mode is FixedPoints.");
+
+			if (TargetMode == FpTargetMode.FixedPoints && FixedTakeProfitPoints <= 0.0)
+				Fail("Fixed take profit (points) must be greater than zero when the target mode is FixedPoints.");
+
+			if (NewsTradeContinuation && NewsContinuationStopPoints <= 0.0)
+				Fail("Continuation stop loss (points) must be greater than zero when news continuation is on.");
+
+			// The take-profit zone pulls the target back toward the entry. If it were
+			// wider than the no-trade zone the target could land on the WRONG side of
+			// Fair Price, i.e. behind the entry, and the bracket would never fill.
+			if (TargetMode != FpTargetMode.FixedPoints && TakeProfitZonePoints > 0.0)
+				Print(string.Format(CultureInfo.InvariantCulture,
+					"FPMR: take-profit zone is {0} points inside Fair Price. Every Fair Price target stops "
+				  + "that far short of the mean, and an entry with less than {0} points of room to Fair Price "
+				  + "is refused by the minimum reward:risk gate.", TakeProfitZonePoints));
 
 			_sessionTz = TimeZoneRegistry.Resolve(SessionTimeZoneId);
 			if (_sessionTz == null)
@@ -237,13 +247,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 				                            NewsConsolidationSearchBars)
 				: null;
 
+			SubscribeToNt8Calendar();
+
 			_news = new NewsFairPriceResolver(_newsLoad.Events, _sessions, NewsImpactFilter,
 			                                  NewsCurrencyFilter, NewsMultipleEventRule, NewsLookbackHours,
 			                                  UseNewsSurprise ? NewsExpectedTolerancePercent   : double.MaxValue,
 			                                  UseNewsSurprise ? NewsUnexpectedThresholdPercent : double.MaxValue,
 			                                  UseNewsSurprise ? NewsUnknownRule : FpNewsUnknownRule.TreatAsExpected,
-			                                  UseNewsSurprise && NewsAllowContinuation,
-			                                  detector);
+			                                  UseNewsSurprise && (NewsAllowContinuation || NewsTradeContinuation),
+			                                  detector,
+			                                  _nt8Calendar, NewsActualSource, NewsHandleInSession);
 
 			int withBoth = 0;
 			foreach (NewsEvent e in _newsLoad.Events)
@@ -267,9 +280,69 @@ namespace NinjaTrader.NinjaScript.Strategies
 					NewsAllowContinuation ? "ON" : "OFF"));
 
 			if (UseNewsSurprise && withBoth == 0)
-				Log("FPMR: surprise classification is ON but NO event in the calendar has both a forecast and an "
-				  + "actual value. Every release will fall to the '" + NewsUnknownRule + "' rule. Check that the "
-				  + "file has 'forecast' and 'actual' columns.", LogLevel.Warning);
+			{
+				if (NewsActualSource == FpNewsActualSource.FileOnly)
+				{
+					Log("FPMR: surprise classification is ON, the actual source is FileOnly, and NO event in the "
+					  + "calendar file carries an actual value — the file has no 'Actual' column. Every release "
+					  + "will fall to the '" + NewsUnknownRule + "' rule, so no news branch can fire. Either add an "
+					  + "Actual column or set the actual source to Nt8CalendarThenFile.", LogLevel.Warning);
+				}
+				else
+				{
+					Print("FPMR news: the calendar file carries no Actual column, which is normal for a "
+					    + "forward-looking export. The actual for each release will come from NinjaTrader's live "
+					    + "economic calendar as it prints. NOTHING ARRIVES IN A BACKTEST — a historical run will "
+					    + "fall to the '" + NewsUnknownRule + "' rule for every release.");
+				}
+			}
+		}
+
+		/// <summary>
+		/// Attaches to NinjaTrader's live economic calendar, which is where the ACTUAL
+		/// released figure comes from. The calendar FILE stays the schedule: NinjaTrader
+		/// publishes a push per release and exposes no queryable list of upcoming ones,
+		/// so neither source replaces the other.
+		/// </summary>
+		private void SubscribeToNt8Calendar()
+		{
+			_nt8Calendar = null;
+
+			if (NewsActualSource == FpNewsActualSource.FileOnly)
+			{
+				Print("FPMR news: actual source is FileOnly — NinjaTrader's live economic calendar is not used. "
+				    + "This is the correct setting for a BACKTEST.");
+				return;
+			}
+
+			_nt8Calendar = new Nt8EconomicFeed();
+
+			if (_nt8Calendar.Subscribe())
+			{
+				Print("FPMR news: subscribed to NinjaTrader's economic calendar for actual values. "
+				    + "Releases arrive as they print; nothing arrives on historical bars, so a BACKTEST needs "
+				    + "an Actual column in the file and the FileOnly setting.");
+			}
+			else
+			{
+				Log("FPMR: could not subscribe to NinjaTrader's economic calendar (" + _nt8Calendar.SubscribeError
+				  + "). Actual values will come from the calendar file only.", LogLevel.Warning);
+				_nt8Calendar = null;
+			}
+		}
+
+		/// <summary>
+		/// Detaches from the calendar. MUST run — EconomicEventUpdateReceived is a STATIC
+		/// event, so a strategy that never unsubscribes leaks itself for the life of the
+		/// platform process and keeps receiving pushes after it has been removed.
+		/// </summary>
+		private void UnsubscribeFromNt8Calendar()
+		{
+			if (_nt8Calendar == null)
+				return;
+
+			_nt8Calendar.Unsubscribe();
+			_nt8Calendar = null;
 		}
 
 		/// <summary>
