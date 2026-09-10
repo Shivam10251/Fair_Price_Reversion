@@ -210,7 +210,90 @@ namespace NinjaTrader.NinjaScript.Strategies
 				_configError ? " | CONFIG ERROR: " + _configErrorText : string.Empty));
 		}
 
+		/// <summary>
+		/// Re-reads the calendar when the file on disk has changed.
+		///
+		/// The calendar is otherwise read exactly once, at DataLoaded. That is fine for
+		/// a backtest and WRONG for an unattended run: a strategy left on a VPS for
+		/// weeks would keep trading last week's schedule, and would never see actuals
+		/// written into the file by an external fetcher.
+		///
+		/// Reloading is deliberately restricted to moments where nothing can be
+		/// disturbed by it — outside any session window, with no continuation regime
+		/// armed and no capture awaiting consolidation. Swapping the resolver mid-session
+		/// would discard the Fair Price a live trade is targeting.
+		/// </summary>
+		private void MaybeReloadNewsCalendar()
+		{
+			if (!UseNewsTrading || !UseNewsFairPrice || string.IsNullOrWhiteSpace(NewsFilePath))
+				return;
+
+			// Never mid-session, never while news state is in flight.
+			if (_effSession != 0 || _contActive)
+				return;
+
+			if (_news != null && _news.IsAwaitingConsolidation)
+				return;
+
+			if (!NewsFileChanged())
+				return;
+
+			_newsReloadCount++;
+
+			Print(string.Format(CultureInfo.InvariantCulture,
+				"{0}  FPMR news: calendar file changed on disk — reloading (reload #{1}).",
+				Time[0].ToString("yyyy-MM-dd HH:mm:ss"), _newsReloadCount));
+
+			// Keep the live calendar subscription across the reload: LoadNewsCalendar
+			// re-subscribes, and subscribing twice would double every push.
+			Nt8EconomicFeed keep = _nt8Calendar;
+			_nt8Calendar = null;
+
+			LoadNewsCalendar(keep);
+		}
+
+		/// <summary>True when the file's timestamp or size differs from what was last read.</summary>
+		private bool NewsFileChanged()
+		{
+			try
+			{
+				System.IO.FileInfo fi = new System.IO.FileInfo(NewsFilePath);
+				if (!fi.Exists)
+					return false;
+
+				if (fi.LastWriteTimeUtc == _newsFileStampUtc && fi.Length == _newsFileLength)
+					return false;
+
+				return true;
+			}
+			catch
+			{
+				// A file being rewritten by a fetcher can be briefly unreadable. Try again
+				// on the next bar rather than treating it as a change.
+				return false;
+			}
+		}
+
+		private void CaptureNewsFileStamp()
+		{
+			try
+			{
+				System.IO.FileInfo fi = new System.IO.FileInfo(NewsFilePath);
+				if (fi.Exists)
+				{
+					_newsFileStampUtc = fi.LastWriteTimeUtc;
+					_newsFileLength   = fi.Length;
+				}
+			}
+			catch { /* stamp stays as it was; the next check simply re-reads */ }
+		}
+
 		private void LoadNewsCalendar()
+		{
+			LoadNewsCalendar(null);
+		}
+
+		private void LoadNewsCalendar(Nt8EconomicFeed existingFeed)
 		{
 			_news     = null;
 			_newsLoad = null;
@@ -247,7 +330,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 				                            NewsConsolidationSearchBars)
 				: null;
 
-			SubscribeToNt8Calendar();
+			// A reload keeps the subscription it already had. Re-subscribing would attach
+			// a second handler to the same static event and double-count every push.
+			if (existingFeed != null)
+				_nt8Calendar = existingFeed;
+			else
+				SubscribeToNt8Calendar();
+
+			CaptureNewsFileStamp();
 
 			_news = new NewsFairPriceResolver(_newsLoad.Events, _sessions, NewsImpactFilter,
 			                                  NewsCurrencyFilter, NewsMultipleEventRule, NewsLookbackHours,

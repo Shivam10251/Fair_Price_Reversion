@@ -47,6 +47,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 		/// <summary>Live NinjaTrader economic calendar, the source of ACTUAL values.</summary>
 		private Nt8EconomicFeed       _nt8Calendar;
 
+		// Calendar-file watch, so an unattended run picks up a refreshed file.
+		private DateTime _newsFileStampUtc;
+		private long     _newsFileLength;
+		private int      _newsReloadCount;
+
 		private EMA _emaFast;
 		private EMA _emaSlow;
 
@@ -239,6 +244,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 				EvaluateEntry(brk);
 
 			ExpireNewsContinuation(sessionEnd);
+
+			// Between sessions only — see MaybeReloadNewsCalendar for why.
+			MaybeReloadNewsCalendar();
 
 			UpdateTrailingStops();
 
