@@ -6,8 +6,6 @@ A dash means NinjaTrader did not report that metric, or the run is still pending
 | Strategy | Total Trades | Net Profit | Profit Factor | Max Drawdown | Win Rate | Average Trade | Long Trades | Short Trades | Commission | Sharpe | Sortino | Status |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | FairPriceMeanReversion | - | - | - | - | - | - | - | - | - | - | - | PENDING_RUN |
-| MultiSessionFirstCandleStrategy | - | - | - | - | - | - | - | - | - | - | - | PENDING_RUN |
-| MnqVpLiquiditySweep | - | - | - | - | - | - | - | - | - | - | - | PENDING_RUN |
 
-**Pending:** strategy_1, strategy_2, strategy_3 - no export found, so no results are shown.
+**Pending:** strategy_1 - no export found, so no results are shown.
 No ranking is produced while any strategy is pending.

@@ -14,42 +14,10 @@
       "sharpe": null,
       "sortino": null,
       "status": "PENDING_RUN"
-    },
-    {
-      "strategy": "MultiSessionFirstCandleStrategy",
-      "total_trades": null,
-      "net_profit": null,
-      "profit_factor": null,
-      "max_drawdown": null,
-      "win_rate": null,
-      "average_trade": null,
-      "long_trades": null,
-      "short_trades": null,
-      "commission": null,
-      "sharpe": null,
-      "sortino": null,
-      "status": "PENDING_RUN"
-    },
-    {
-      "strategy": "MnqVpLiquiditySweep",
-      "total_trades": null,
-      "net_profit": null,
-      "profit_factor": null,
-      "max_drawdown": null,
-      "win_rate": null,
-      "average_trade": null,
-      "long_trades": null,
-      "short_trades": null,
-      "commission": null,
-      "sharpe": null,
-      "sortino": null,
-      "status": "PENDING_RUN"
     }
   ],
   "imported": [],
   "pending": [
-    "strategy_1",
-    "strategy_2",
-    "strategy_3"
+    "strategy_1"
   ]
 }

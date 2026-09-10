@@ -9,12 +9,8 @@ It looks for exports dropped in backtest_results/raw/ named:
 
     raw/strategy_1_trades.csv      Strategy Analyzer -> Trades tab -> right-click -> Export
     raw/strategy_1_summary.csv     Strategy Analyzer -> Summary tab -> right-click -> Export
-    raw/strategy_2_trades.csv
-    raw/strategy_2_summary.csv
-    raw/strategy_3_trades.csv
-    raw/strategy_3_summary.csv
 
-Any missing pair leaves that strategy at PENDING_RUN. Nothing is invented: a
+A missing pair leaves the strategy at PENDING_RUN. Nothing is invented: a
 metric NinjaTrader did not export stays null.
 
 It writes:
@@ -27,9 +23,7 @@ import csv, io, json, os, re, sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RAW  = os.path.join(ROOT, "raw")
 
-STRATS = [("strategy_1", "FairPriceMeanReversion"),
-          ("strategy_2", "MultiSessionFirstCandleStrategy"),
-          ("strategy_3", "MnqVpLiquiditySweep")]
+STRATS = [("strategy_1", "FairPriceMeanReversion")]
 
 # NinjaTrader's Summary grid labels -> our summary.json keys. NT localises and
 # occasionally renames these, so matching is case-insensitive and punctuation

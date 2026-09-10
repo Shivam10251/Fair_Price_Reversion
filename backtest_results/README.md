@@ -2,7 +2,7 @@
 
 ## Status: NO BACKTEST HAS BEEN RUN
 
-All three strategies are **inspected, compiled and deployed**. None has been
+FairPriceMeanReversion is **inspected, compiled and deployed**. It has not been
 backtested, because the NinjaTrader 8 Strategy Analyzer could not be driven from
 the assistant's environment:
 
@@ -21,7 +21,7 @@ the assistant's environment:
 Every performance field is therefore `null` and every `summary.json` carries
 `"status": "PENDING_RUN"`. Nothing has been estimated, simulated or inferred.
 
-Running the three backtests is a manual step. Everything on either side of it —
+Running the backtest is a manual step. Everything on either side of it —
 inspection, compilation, configuration, import, comparison, ranking — is done or
 automated.
 
@@ -29,7 +29,7 @@ automated.
 
 ## What HAS been verified
 
-**Compilation** — all three compile clean (exit 0) using the Microsoft C#
+**Compilation** — compiles clean (exit 0) using the Microsoft C#
 compiler against `NinjaTrader.Core.dll`, `NinjaTrader.Gui.dll` and
 `NinjaTrader.Custom.dll`. NinjaTrader's own NinjaScript compiler (F5) remains
 authoritative and has not been run.
@@ -37,8 +37,6 @@ authoritative and has not been run.
 | Strategy | Files | Result |
 |---|---|---|
 | FairPriceMeanReversion | 23 | exit 0 |
-| MultiSessionFirstCandleStrategy | 1 | exit 0 |
-| MnqVpLiquiditySweep | 10 | exit 0 |
 
 **Historical data** — read directly from
 `Documents/NinjaTrader 8/db/minute/`:
@@ -55,19 +53,18 @@ Sufficient for the requested range. 2026-12-31 has not occurred, so the end date
 is the latest available data.
 
 **Unit tests** (assistant-run, not NinjaTrader):
-- Volume profile port vs 5 hand-computed cases — 18/18 assertions pass
 - DST rebasing, summer and winter — 14/14 assertions pass
 
 ---
 
-## How to run the three backtests
+## How to run the backtest
 
 ### 1. Compile in NinjaTrader
 
-Open the NinjaScript Editor and press **F5**. All three are already deployed to
+Open the NinjaScript Editor and press **F5**. The strategy is already deployed to
 `Documents\NinjaTrader 8\bin\Custom\Strategies\`.
 
-### 2. Configure the Strategy Analyzer — identical for all three
+### 2. Configure the Strategy Analyzer
 
 | Setting | Value |
 |---|---|
@@ -95,26 +92,22 @@ Then use the plain `MNQ` symbol; NinjaTrader splices the contracts itself. Do no
 select `MNQ 03-26` / `06-26` / `09-26` individually.
 
 **Trading Hours is the setting most likely to produce a silently empty run.**
-Strategy 3 trades almost entirely outside US cash hours — its range session is
-18:00–20:00 New York and its entry window runs 20:00 → 05:30 New York. An
-RTH-only template supplies no bars there at all, so no levels are ever built and
-no trade can occur. Strategy 2's sessions 2 and 3 are likewise overnight.
+An RTH-only template supplies no bars outside US cash hours, so a session window
+that falls there never produces a setup.
 
 ### 3. Leave the strategy parameters at their defaults
 
-The defaults are recorded in each `config.json` under `parameters_as_run`. If you
+The defaults are recorded in `config.json` under `parameters_as_run`. If you
 change any, update that file so the run stays reproducible.
 
 ### 4. Run, then export
 
-For each strategy, after the run completes:
+After the run completes:
 
 - **Trades** tab → right-click → *Export* → save as
-  `backtest_results/raw/strategy_N_trades.csv`
+  `backtest_results/raw/strategy_1_trades.csv`
 - **Summary** tab → right-click → *Export* → save as
-  `backtest_results/raw/strategy_N_summary.csv`
-
-where N is 1, 2, 3 in the order listed below.
+  `backtest_results/raw/strategy_1_summary.csv`
 
 ### 5. Import
 
@@ -122,8 +115,8 @@ where N is 1, 2, 3 in the order listed below.
 python backtest_results/scripts/import_nt8_results.py
 ```
 
-This fills in `summary.json` and `trades.csv` for each strategy, flips their
-status to `COMPLETED`, and builds `comparison/comparison.{json,csv,md}`. Any
+This fills in `summary.json` and `trades.csv`, flips the status to
+`COMPLETED`, and builds `comparison/comparison.{json,csv,md}`. Any
 metric NinjaTrader did not export stays `null` rather than being guessed at.
 
 ---
@@ -133,27 +126,8 @@ metric NinjaTrader did not export stays `null` rather than being guessed at.
 | N | NinjaTrader name | Source |
 |---|---|---|
 | 1 | `FairPriceMeanReversion` | `src/NinjaTrader8/Strategies/` |
-| 2 | `MultiSessionFirstCandleStrategy` | `strategy_2/` |
-| 3 | `MnqVpLiquiditySweep` | `strategy_3/` |
 
-Full logic breakdown for each is in its `config.json`.
-
----
-
-## Known open issue — Strategy 3
-
-The user reported **zero trades** on a prior run. This is **not diagnosed**.
-
-An instrumented build is deployed: it prints a funnel at the end of every run
-(bars processed, profile/range sessions built and published, bars with a usable
-level set, bars where entry was allowed, sweeps, confirmations, entries, plus a
-per-gate rejection breakdown) and names the first stage that produced nothing.
-Only counters and `Print` were added — no trading logic was touched.
-
-Leading hypothesis, **unconfirmed**: an RTH-only Trading Hours template. See
-step 2 above.
-
-Paste the funnel output if it still produces nothing.
+Full logic breakdown is in its `config.json`.
 
 ---
 
@@ -168,9 +142,7 @@ backtest_results/
 ├── scripts/
 │   └── import_nt8_results.py  raw exports -> summary.json + trades.csv + comparison
 ├── 2026/
-│   ├── strategy_1/  config.json  summary.json  trades.csv  errors.log  changes.md
-│   ├── strategy_2/  ...
-│   └── strategy_3/  ...
+│   └── strategy_1/  config.json  summary.json  trades.csv  errors.log  changes.md
 ├── comparison/                built by the importer
 └── logs/
     └── execution.log
