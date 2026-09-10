@@ -444,12 +444,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			// Windows are typed in IST as their SUMMER (US-DST) times. The winter
 			// equivalents are derived, never typed:
-			//   1930-2100 IST summer = 1000-1130 New York = 2030-2200 IST winter
+			//   1900-2030 IST summer = 0930-1100 New York = 2000-2130 IST winter
 			SessionTimeZoneId         = "Asia/Kolkata";
 			AutoAdjustForUsDst        = true;
 			BarTimeZoneOverrideId     = string.Empty;
 			Session1Enabled           = true;
-			Session1Window            = "1930-2100";
+			Session1Window            = "1900-2030";
 			Session2Enabled           = false;
 			Session2Window            = "2000-2100";
 			Session3Enabled           = false;
@@ -507,8 +507,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 			// news Fair Price lands on the wrong candle.
 			NewsFileTimeZoneId    = "UTC";
 			NewsCsvDateFormat     = "MM-dd-yyyy";
-			// 1930 IST session open, 1800 IST release (1230 UTC) = 1.5h apart. The old
-			// one-hour lookback would have missed it entirely.
+			// 1900 IST session open, 1800 IST release (1230 UTC) = exactly 1h apart.
+			// The window is [open - lookback, open), so a 1.0 lookback would put the
+			// release exactly on the boundary. 2.0 keeps it comfortably inside.
 			NewsLookbackHours     = 2.0;
 			NewsImpactFilter      = FpNewsImpactFilter.HighOnly;
 			NewsCurrencyFilter    = "USD";
