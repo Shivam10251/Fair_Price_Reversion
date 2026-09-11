@@ -346,7 +346,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                                  UseNewsSurprise ? NewsUnknownRule : FpNewsUnknownRule.TreatAsExpected,
 			                                  UseNewsSurprise && (NewsAllowContinuation || NewsTradeContinuation),
 			                                  detector,
-			                                  _nt8Calendar, NewsActualSource, NewsHandleInSession);
+			                                  _nt8Calendar, NewsActualSource, NewsHandleInSession,
+			                                  TimeSpan.FromSeconds(NewsActualWaitSeconds));
 
 			int withBoth = 0;
 			foreach (NewsEvent e in _newsLoad.Events)
@@ -405,7 +406,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 				return;
 			}
 
-			_nt8Calendar = new Nt8EconomicFeed();
+			// NinjaTrader stamps each release in its display zone, which is the zone the bar
+			// timestamps are in; the file's times are in the session zone. The feed needs
+			// both to match a release by date.
+			_nt8Calendar = new Nt8EconomicFeed(_barTz, _sessionTz);
 
 			if (_nt8Calendar.Subscribe())
 			{

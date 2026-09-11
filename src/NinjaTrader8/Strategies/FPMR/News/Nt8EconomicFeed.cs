@@ -40,7 +40,7 @@
 //    UNDOCUMENTED internal API reached by reflection; every step is guarded so a
 //    platform update degrades to "no pull available" rather than throwing.
 //  * The event fires on a feed thread, not the bar thread. Every read and write
-//    of _latest is therefore under a lock.
+//    of _byName is therefore under a lock.
 //  * The subscription is to a STATIC event, so it outlives the strategy instance
 //    unless it is removed. Unsubscribe() runs from State.Terminated.
 // =============================================================================
@@ -62,6 +62,8 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public double   Consensus;
 		public double   Prior;
 		public DateTime Timestamp;
+		/// <summary>Timestamp converted to UTC on receipt. Timestamp itself is in NinjaTrader's display zone.</summary>
+		public DateTime TimestampUtc;
 		/// <summary>Local wall-clock instant the push reached us, for the log.</summary>
 		public DateTime ReceivedLocal;
 
@@ -80,8 +82,27 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 	public sealed class Nt8EconomicFeed
 	{
 		private readonly object _gate = new object();
-		private readonly Dictionary<string, Nt8EconomicRelease> _latest =
-			new Dictionary<string, Nt8EconomicRelease>(StringComparer.OrdinalIgnoreCase);
+		// Every release received, grouped by normalised country|name. A LIST, not a
+		// single slot: one pull carries the same release for many dates - this month's
+		// CPI, next month's, the month after. Keyed on the name alone, whichever arrived
+		// LAST won, and on the live connection that was next month's CPI with no actual,
+		// silently replacing today's. Find() therefore picks by date.
+		private readonly Dictionary<string, List<Nt8EconomicRelease>> _byName =
+			new Dictionary<string, List<Nt8EconomicRelease>>(StringComparer.OrdinalIgnoreCase);
+
+		/// <summary>Zone NinjaTrader writes EconomicUpdateArgs.Timestamp in - its display zone.</summary>
+		private readonly TimeZoneInfo _feedTz;
+		/// <summary>Zone the calendar file's release times are expressed in.</summary>
+		private readonly TimeZoneInfo _sessionTz;
+
+		/// <summary>How far a pushed timestamp may sit from the scheduled time and still be that release.</summary>
+		private static readonly TimeSpan MatchWindow = TimeSpan.FromHours(12);
+
+		public Nt8EconomicFeed(TimeZoneInfo feedTz, TimeZoneInfo sessionTz)
+		{
+			_feedTz    = feedTz;
+			_sessionTz = sessionTz;
+		}
 
 		private EventHandler<NinjaTrader.Cbi.EconomicUpdateArgs> _handler;
 		private bool _subscribed;
@@ -231,30 +252,94 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 					ReceivedLocal = DateTime.Now
 				};
 
-				lock (_gate)
-				{
-					_latest[Key(r.Country, r.EventName)] = r;
-					ReceivedCount++;
-				}
+				Ingest(r);
 			}
 			catch { /* a malformed push must not take the feed thread down */ }
 		}
 
 		/// <summary>
-		/// Finds the release matching a scheduled calendar row. Exact key first, then a
-		/// containment match within the same country, because the two sources name the
-		/// same release differently ("Core PPI m/m" vs "PPI ex Food/Energy MoM").
+		/// Stores one release. Public so the offline tests can feed it the exact rows a
+		/// real pull delivered; inside the platform only the push handler calls it.
+		///
+		/// Merge rule for the same release at the same time: a row WITH an actual is
+		/// never replaced by a row without one. NinjaTrader sends several rows per
+		/// release at different importances, some entirely NaN, in no fixed order -
+		/// letting the last one win would turn a printed actual back into "unknown".
 		/// </summary>
-		public Nt8EconomicRelease Find(string country, string title)
+		public void Ingest(Nt8EconomicRelease r)
+		{
+			if (r == null)
+				return;
+
+			r.TimestampUtc = ToUtc(r.Timestamp, _feedTz);
+			string key = Key(r.Country, r.EventName);
+
+			lock (_gate)
+			{
+				ReceivedCount++;
+
+				List<Nt8EconomicRelease> list;
+				if (!_byName.TryGetValue(key, out list))
+				{
+					list = new List<Nt8EconomicRelease>();
+					_byName[key] = list;
+				}
+
+				for (int i = 0; i < list.Count; i++)
+				{
+					Nt8EconomicRelease have = list[i];
+					if (Math.Abs((have.TimestampUtc - r.TimestampUtc).TotalMinutes) > 1.0)
+						continue;
+
+					if (have.HasActual && !r.HasActual)
+					{
+						// Keep the printed figure; only borrow a forecast the kept row lacks.
+						if (!have.HasConsensus && r.HasConsensus)
+							have.Consensus = r.Consensus;
+						return;
+					}
+
+					if (!r.HasConsensus && have.HasConsensus)
+						r.Consensus = have.Consensus;
+
+					list[i] = r;
+					return;
+				}
+
+				list.Add(r);
+			}
+		}
+
+		/// <summary>
+		/// The release matching a scheduled calendar row, or null.
+		///
+		/// Matched on name AND date: of the rows carrying this release's name, the one
+		/// whose timestamp is closest to the scheduled time, within MatchWindow. Wide
+		/// enough that a zone mismatch between NinjaTrader's display zone and the file
+		/// cannot lose the match; narrow enough never to reach next month's release, or
+		/// next week's for weekly data.
+		///
+		/// An exact-name row in the window is returned EVEN WITHOUT an actual. That is
+		/// deliberate: falling back to a looser name match there would hand "PPI m/m"
+		/// the Core PPI figure. Containment matching is used only when no row carries
+		/// the exact name at all.
+		/// </summary>
+		public Nt8EconomicRelease Find(string country, string title, DateTime releaseSessionTz)
 		{
 			if (string.IsNullOrWhiteSpace(title))
 				return null;
 
+			DateTime wantUtc = ToUtc(releaseSessionTz, _sessionTz);
+
 			lock (_gate)
 			{
-				Nt8EconomicRelease exact;
-				if (_latest.TryGetValue(Key(country, title), out exact))
-					return exact;
+				List<Nt8EconomicRelease> exact;
+				if (_byName.TryGetValue(Key(country, title), out exact))
+				{
+					Nt8EconomicRelease hit = Closest(exact, wantUtc);
+					if (hit != null)
+						return hit;
+				}
 
 				string wantCountry = NormaliseCountry(country);
 				string wantName    = Normalise(title);
@@ -262,28 +347,96 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 					return null;
 
 				Nt8EconomicRelease best = null;
+				int    bestLenGap  = int.MaxValue;
+				double bestTimeGap = double.MaxValue;
 
-				foreach (KeyValuePair<string, Nt8EconomicRelease> kv in _latest)
+				foreach (KeyValuePair<string, List<Nt8EconomicRelease>> kv in _byName)
 				{
-					Nt8EconomicRelease r = kv.Value;
+					foreach (Nt8EconomicRelease r in kv.Value)
+					{
+						if (wantCountry.Length > 0 && NormaliseCountry(r.Country) != wantCountry)
+							continue;
 
-					if (wantCountry.Length > 0 && NormaliseCountry(r.Country) != wantCountry)
-						continue;
+						string haveName = Normalise(r.EventName);
+						if (haveName.Length == 0)
+							continue;
 
-					string haveName = Normalise(r.EventName);
-					if (haveName.Length == 0)
-						continue;
+						if (haveName.IndexOf(wantName, StringComparison.Ordinal) < 0
+						    && wantName.IndexOf(haveName, StringComparison.Ordinal) < 0)
+							continue;
 
-					if (haveName.IndexOf(wantName, StringComparison.Ordinal) < 0
-					    && wantName.IndexOf(haveName, StringComparison.Ordinal) < 0)
-						continue;
+						double timeGap = Math.Abs((r.TimestampUtc - wantUtc).TotalMinutes);
+						if (timeGap > MatchWindow.TotalMinutes)
+							continue;
 
-					// Most recent wins: a revision supersedes the first print.
-					if (best == null || r.ReceivedLocal > best.ReceivedLocal)
-						best = r;
+						// Containment is a weak signal, so it is only trusted when the names
+						// differ by a few characters AND agree on "core". Without these two
+						// guards "CPI m/m" would take the Core CPI figure, or the Cleveland
+						// Fed's CPI - both contain "cpimom". A missed match is safe: the
+						// release is held, then skipped. A wrong match trades a number that
+						// belongs to a different release.
+						int lenGap = Math.Abs(haveName.Length - wantName.Length);
+						if (lenGap > 3)
+							continue;
+						if ((haveName.IndexOf("core", StringComparison.Ordinal) >= 0)
+						    != (wantName.IndexOf("core", StringComparison.Ordinal) >= 0))
+							continue;
+
+						if (lenGap < bestLenGap || (lenGap == bestLenGap && timeGap < bestTimeGap))
+						{
+							best        = r;
+							bestLenGap  = lenGap;
+							bestTimeGap = timeGap;
+						}
+					}
 				}
 
 				return best;
+			}
+		}
+
+		private static Nt8EconomicRelease Closest(List<Nt8EconomicRelease> list, DateTime wantUtc)
+		{
+			Nt8EconomicRelease best = null;
+			double bestGap = double.MaxValue;
+
+			foreach (Nt8EconomicRelease r in list)
+			{
+				double gap = Math.Abs((r.TimestampUtc - wantUtc).TotalMinutes);
+				if (gap > MatchWindow.TotalMinutes)
+					continue;
+
+				// Equal distance: prefer the row that actually carries a figure.
+				if (gap < bestGap || (gap == bestGap && r.HasActual && (best == null || !best.HasActual)))
+				{
+					best    = r;
+					bestGap = gap;
+				}
+			}
+
+			return best;
+		}
+
+		/// <summary>
+		/// Wall-clock time in <paramref name="zone"/> to UTC. A null zone means the value
+		/// is already UTC. A time inside a DST gap cannot be converted exactly; it is
+		/// shifted by the zone's base offset instead - at most an hour out, well inside
+		/// MatchWindow.
+		/// </summary>
+		private static DateTime ToUtc(DateTime t, TimeZoneInfo zone)
+		{
+			DateTime naive = DateTime.SpecifyKind(t, DateTimeKind.Unspecified);
+
+			if (zone == null)
+				return DateTime.SpecifyKind(naive, DateTimeKind.Utc);
+
+			try
+			{
+				return TimeZoneInfo.ConvertTimeToUtc(naive, zone);
+			}
+			catch (ArgumentException)
+			{
+				return DateTime.SpecifyKind(naive - zone.BaseUtcOffset, DateTimeKind.Utc);
 			}
 		}
 
@@ -292,7 +445,9 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		{
 			lock (_gate)
 			{
-				List<Nt8EconomicRelease> all = new List<Nt8EconomicRelease>(_latest.Values);
+				List<Nt8EconomicRelease> all = new List<Nt8EconomicRelease>();
+				foreach (List<Nt8EconomicRelease> l in _byName.Values)
+					all.AddRange(l);
 				all.Sort((a, b) => b.ReceivedLocal.CompareTo(a.ReceivedLocal));
 				return all;
 			}

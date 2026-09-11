@@ -219,7 +219,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public double BreakEvenAtR { get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Trailing stop mode", Description = "Off: the stop stays at entry. R-step: at +1R the stop moves to breakeven, +2R to +1R, +3R to +2R, and so on (R = entry-to-initial-stop). Structure: the stop trails confirmed swings — down to each lower swing high for shorts, up to each higher swing low for longs, using the same pivot and SL-buffer settings as entries. Ignored under Fixed TP/SL.", GroupName = G_TRL, Order = 1)]
+		[Display(Name = "Trailing stop mode", Description = "Off: the stop stays at entry. R-step: at +1R the stop moves to breakeven, +2R to +1R, +3R to +2R, and so on (R = entry-to-initial-stop). Structure: the stop trails confirmed swings — down to each lower swing high for shorts, up to each higher swing low for longs, using the same pivot and SL-buffer settings as entries. Applies to every trade, fixed-points stops included - a trail only tightens, so it never changes the risk a trade was sized on. RStep already moves the stop to breakeven at +1R, so with RStep on, the breakeven trigger above adds nothing.", GroupName = G_TRL, Order = 1)]
 		public FpTrailMode TrailMode { get; set; }
 
 		// ── 5 · RISK SIZING ───────────────────────────────────────────────────────
@@ -319,6 +319,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[NinjaScriptProperty]
 		[Display(Name = "Handle news INSIDE the session", Description = "On: a qualifying release that lands inside an open session is acted on too. If it MATCHED its forecast the news candle's open replaces the session Fair Price for the rest of the session; if it MISSED, nothing happens — no mid-session continuation — and the session's own Fair Price stands. Off: only releases BEFORE the session open are considered.", GroupName = G_NEWS, Order = 13)]
 		public bool NewsHandleInSession { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0, 3600)]
+		[Display(Name = "Wait for actual (seconds)", Description = "If NinjaTrader has not delivered the ACTUAL by the time the news candle closes, the decision is HELD rather than skipped: the strategy re-checks every 2 seconds and re-requests the calendar every 20 seconds until the figure arrives. A CONTINUATION is only traded if the actual lands within this many seconds of the news candle's close - later than that it is a different trade, and is refused. A REVERSION Fair Price is applied whenever the actual arrives, until the session it belongs to ends. 0 = never trade a late continuation.", GroupName = G_NEWS, Order = 14)]
+		public int NewsActualWaitSeconds { get; set; }
 
 		[NinjaScriptProperty]
 		[Display(Name = "News Fair Price expires at session open", Description = "On: a news Fair Price is valid only BEFORE the session opens (for the pre-session reversion window). At the session open it is discarded and the session's own first-candle Fair Price governs the rest of the session. Off: the news Fair Price governs the entire session (the original behaviour).", GroupName = G_NEWS, Order = 11)]
@@ -451,34 +456,34 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			// Windows are typed in IST as their SUMMER (US-DST) times. The winter
 			// equivalents are derived, never typed:
-			//   1900-2030 IST summer = 0930-1100 New York = 2000-2130 IST winter
+			//   1900-2100 IST summer = 0930-1130 New York = 2000-2200 IST winter
 			SessionTimeZoneId         = "Asia/Kolkata";
 			AutoAdjustForUsDst        = true;
 			BarTimeZoneOverrideId     = string.Empty;
 			Session1Enabled           = true;
-			Session1Window            = "1900-2030";
+			Session1Window            = "1900-2100";
 			Session2Enabled           = false;
 			Session2Window            = "2000-2100";
 			Session3Enabled           = false;
 			Session3Window            = "2330-0030";
 
-			FairPriceSource           = FpSource.Close;
+			FairPriceSource           = FpSource.Open;
 			FairPriceReferenceMinutes = 1;
-			ZonePercent               = 0.1;
-			Band1Percent              = 0.3;
-			Band2Percent              = 0.6;
+			ZonePercent               = 0.0;
+			Band1Percent              = 0.1;
+			Band2Percent              = 2.0;
 
-			PivotLeftBars             = 3;
-			PivotRightBars            = 2;
+			PivotLeftBars             = 1;
+			PivotRightBars            = 1;
 			BreakConfirmation         = FpBreakConfirm.Close;
 			ActiveLevelMode           = FpActiveLevelMode.LatestSwing;
 
 			EntryModel                       = FpEntryModel.Reversion;
 			RewardRatio                      = 1.5;
-			MaxTradesPerDay                  = 0;   // unlimited - the $700 daily loss limit is what stops the day
+			MaxTradesPerDay                  = 0;   // unlimited - the daily loss limit is what stops the day
 			MaxTradesPerSession              = 0;
 			SetupValidityBars                = 30;
-			OnlyOneOpenTrade                 = true;
+			OnlyOneOpenTrade                 = false;
 			MaxConcurrentEntriesPerDirection = 3;
 			TakeChochEntries                 = true;
 			TakeBosEntries                   = true;
@@ -494,12 +499,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 			StopMode              = FpStopMode.FixedPoints;
 			FixedStopLossPoints   = 25.0;
 			TargetMode            = FpTargetMode.FairPrice;
-			TakeProfitZonePoints  = 0.0;
+			TakeProfitZonePoints  = 6.0;
 			FixedTakeProfitPoints = 40.0;
 			MinRewardRiskRatio    = 1.0;
 
-			BreakEvenAtR          = -1.0;   // off until the user asks for it
-			TrailMode             = FpTrailMode.Off;
+			BreakEvenAtR          = 2.0;
+			TrailMode             = FpTrailMode.RStep;
 
 			RiskTargetUSD    = 100.0;
 			RiskToleranceUSD = 20.0;
@@ -529,6 +534,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			NewsFairPriceExpiresAtSessionOpen = false;
 			NewsActualSource                  = FpNewsActualSource.Nt8CalendarThenFile;
 			NewsHandleInSession               = true;
+			NewsActualWaitSeconds             = 120;
 
 			UseEmaFilter   = false;
 			UseEma1        = true;
@@ -538,7 +544,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			UseVwapFilter  = false;
 
 			UseDailyPnlLimits   = true;
-			DailyLossLimitUSD   = 700.0;
+			DailyLossLimitUSD   = 550.0;
 			DailyProfitLimitUSD = 0.0;    // no profit cap was asked for
 			FlattenOnDailyLimit = false;
 

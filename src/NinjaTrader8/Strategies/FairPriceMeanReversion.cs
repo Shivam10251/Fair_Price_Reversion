@@ -52,6 +52,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private long     _newsFileLength;
 		private int      _newsReloadCount;
 
+		// Waiting for a late actual. The strategy otherwise only wakes on bar close, so a
+		// release whose figure lands a few seconds after the news candle closed would
+		// wait a whole minute to be decided. This timer checks every two seconds.
+		private System.Threading.Timer _newsTimer;
+		private DateTime _lastCalendarPullUtc = DateTime.MinValue;
+		private const int NewsTimerPeriodMs = 2000;
+		private static readonly TimeSpan CalendarRePullEvery = TimeSpan.FromSeconds(20);
+
 		private EMA _emaFast;
 		private EMA _emaSlow;
 
@@ -153,11 +161,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 			else if (State == State.Realtime)
 			{
 				ReconcileOnRealtimeTransition();
+				StartNewsTimer();
 			}
 			else if (State == State.Terminated)
 			{
 				// Order matters: the summary reports what the calendar delivered, and
 				// unsubscribing a STATIC event is not optional — see the helper.
+				StopNewsTimer();
 				PrintRunSummary();
 				UnsubscribeFromNt8Calendar();
 			}
@@ -200,7 +210,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			bool sessionStart = _effSession != 0 && _effSession != _prevEffSession;
 			bool sessionEnd   = _effSession == 0 && _prevEffSession != 0;
+			int  endedSession = sessionEnd ? _prevEffSession : 0;
 			_prevEffSession   = _effSession;
+
+			// A release still waiting for its actual when its session ends is dropped:
+			// the Fair Price it would have set no longer governs anything.
+			if (endedSession != 0 && _news != null)
+			{
+				_news.ExpirePendingForSession(endedSession);
+				FlushNewsReports();
+			}
 
 			if (ev.IsNewDay)
 				_tradesDay = 0;
@@ -348,8 +367,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				capture = _news.OnReferenceBar(tz, _fpBarLength, _fpCursor,
 					Opens[idx][barsAgo], Highs[idx][barsAgo], Lows[idx][barsAgo], Closes[idx][barsAgo]);
 
-				if (_news.ReportIsNew && PrintNewsReports)
-					Print(_news.LastReport);
+				FlushNewsReports();
 
 				if (sessionIndex != 0)
 					pending = _news.PendingFor(sessionIndex, sessionOpenTz);
@@ -363,6 +381,86 @@ namespace NinjaTrader.NinjaScript.Strategies
 					_fair.IsNewsFairPrice && _fair.NewsEventUsed != null
 						? "  [news: " + _fair.NewsEventUsed + "]"
 						: string.Empty));
+		}
+
+		private void FlushNewsReports()
+		{
+			if (_news == null)
+				return;
+
+			List<string> reports = _news.TakeReports();
+			if (!PrintNewsReports)
+				return;
+
+			foreach (string r in reports)
+				Print(r);
+		}
+
+		/// <summary>Starts the late-actual timer. Realtime only: nothing arrives on historical bars.</summary>
+		private void StartNewsTimer()
+		{
+			StopNewsTimer();
+
+			if (_news == null || _nt8Calendar == null)
+				return;
+
+			_newsTimer = new System.Threading.Timer(OnNewsTimerTick, null, NewsTimerPeriodMs, NewsTimerPeriodMs);
+		}
+
+		private void StopNewsTimer()
+		{
+			System.Threading.Timer t = _newsTimer;
+			_newsTimer = null;
+			if (t != null)
+				t.Dispose();
+		}
+
+		/// <summary>
+		/// Timer thread. Hands over to the strategy thread, and only when something is
+		/// actually waiting - on a day with no pending release this is one boolean read
+		/// every two seconds. TriggerCustomEvent is NinjaTrader's sanctioned way in from
+		/// another thread: it runs the callback on the strategy's own event thread with
+		/// the bar series synchronised, where order submission is safe.
+		/// </summary>
+		private void OnNewsTimerTick(object state)
+		{
+			try
+			{
+				NewsFairPriceResolver news = _news;
+				if (news == null || !news.HasPending || State != State.Realtime)
+					return;
+
+				TriggerCustomEvent(o => ResolveNewsFromTimer(), null);
+			}
+			catch { /* a timer tick must never take the strategy down */ }
+		}
+
+		private void ResolveNewsFromTimer()
+		{
+			if (_news == null || !_news.HasPending)
+				return;
+
+			// Ask the server again rather than rely on the push arriving by itself.
+			// Throttled: this is an undocumented request and each one returns the whole
+			// calendar.
+			if (_nt8Calendar != null && DateTime.UtcNow - _lastCalendarPullUtc >= CalendarRePullEvery)
+			{
+				string detail;
+				_lastCalendarPullUtc = DateTime.UtcNow;
+				bool ok = _nt8Calendar.RequestFullCalendar(out detail);
+
+				if (VerboseLogging)
+					Print(string.Format(CultureInfo.InvariantCulture, "{0}  FPMR news: waiting for an actual - calendar {1} ({2})",
+						DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), ok ? "re-requested" : "re-request failed", detail));
+			}
+
+			DateTime nowSessionTz = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sessionTz);
+
+			int decided = _news.ResolvePending(nowSessionTz);
+			FlushNewsReports();
+
+			if (decided > 0)
+				ProcessNewsContinuation(true);
 		}
 
 		private void DetectAndFeedPivots()

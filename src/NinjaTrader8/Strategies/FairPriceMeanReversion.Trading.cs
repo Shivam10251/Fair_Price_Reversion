@@ -88,7 +88,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				DailyProfitOk= !_dayProfitHit,
 				DayCapOk     = MaxTradesPerDay     == 0 || _tradesDay     < MaxTradesPerDay,
 				SessionCapOk = MaxTradesPerSession == 0 || _tradesSession < MaxTradesPerSession,
-				FlatOk       = !OnlyOneOpenTrade || (_openTrades.Count == 0 && Position.MarketPosition == MarketPosition.Flat),
+				FlatOk       = ConcurrencyAllows(dir),
 				EventOk      = EventAllowed(brk.Event),
 				EmaOk        = dir < 0 ? EmaOkShort() : EmaOkLong(),
 				VwapOk       = dir < 0 ? VwapOkShort() : VwapOkLong(),
@@ -192,6 +192,40 @@ namespace NinjaTrader.NinjaScript.Strategies
 				return double.NaN;
 
 			return Instrument.MasterInstrument.RoundToTickSize(raw);
+		}
+
+		/// <summary>
+		/// Whether another trade in <paramref name="dir"/> may open now.
+		///
+		/// "Only one open trade" on: nothing open and the account flat.
+		///
+		/// Off: at most MaxConcurrentEntriesPerDirection trades in that direction, and NONE
+		/// while a trade in the other direction is open. Both limits are enforced HERE
+		/// because NinjaTrader will not: every trade has its own signal name, and under
+		/// EntryHandling.UniqueEntries EntriesPerDirection applies PER NAME, so it never
+		/// caps the total. And with managed orders an opposite-direction entry does not
+		/// sit alongside an open trade - it reverses the position, closing that trade.
+		/// </summary>
+		private bool ConcurrencyAllows(int dir)
+		{
+			if (OnlyOneOpenTrade)
+				return _openTrades.Count == 0 && Position.MarketPosition == MarketPosition.Flat;
+
+			int same = 0;
+
+			for (int i = 0; i < _openTrades.Count; i++)
+			{
+				TradeRecord t = _openTrades[i];
+				if (t.IsClosed)
+					continue;
+
+				if (t.Direction != dir)
+					return false;
+
+				same++;
+			}
+
+			return same < Math.Max(1, MaxConcurrentEntriesPerDirection);
 		}
 
 		/// <summary>
@@ -481,9 +515,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 				TargetPrice       = target,
 				Quantity          = sizing.Quantity,
 				TargetIsFairPrice = targetIsFair,
-				// A fixed-distance stop is a risk statement, not a structure level, so a
-				// trail that widens the plan would defeat the point of the constant size.
-				Trail             = StopMode == FpStopMode.FixedPoints ? FpTrailMode.Off : TrailMode,
+				// Every trade trails when a trail mode is chosen, fixed-points stops
+				// included: a trail only ever tightens, so it cannot change the risk the
+				// trade was sized on.
+				Trail             = TrailMode,
 				MaxFavorablePoints = 0.0,
 				EntryBarIndex     = CurrentBar,
 				EntryBarTime   = Time[0],
@@ -529,6 +564,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 		/// <summary>Consumes a continuation signal produced on this bar, if any.</summary>
 		private void ProcessNewsContinuation()
 		{
+			ProcessNewsContinuation(false);
+		}
+
+		/// <summary>
+		/// <paramref name="late"/>: decided between bars, by the timer, because the actual
+		/// arrived after the news candle closed. Close[0] is then a price from up to a
+		/// minute ago, so the stop and target are anchored to the live bid/ask instead.
+		/// The entry is a market order either way.
+		/// </summary>
+		private void ProcessNewsContinuation(bool late)
+		{
 			if (_news == null || !NewsTradeContinuation)
 				return;
 
@@ -544,14 +590,25 @@ namespace NinjaTrader.NinjaScript.Strategies
 			_contSessionOpen  = sig.SessionOpenTz;
 			_contTradesTaken  = 0;
 
+			double entryRef = Close[0];
+			if (late && State == State.Realtime)
+			{
+				double live = sig.Direction > 0 ? GetCurrentAsk() : GetCurrentBid();
+				if (live > 0.0)
+					entryRef = live;
+			}
+
 			Print(string.Format(CultureInfo.InvariantCulture,
-				"{0}  NEWS CONTINUATION armed {1} — {2} missed its forecast by {3:0.##}%. Entering at the news candle close.",
-				Time[0].ToString("yyyy-MM-dd HH:mm:ss"),
+				"{0}  NEWS CONTINUATION armed {1} — {2} missed its forecast by {3:0.##}%. {4}",
+				late ? DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") : Time[0].ToString("yyyy-MM-dd HH:mm:ss"),
 				sig.Direction > 0 ? "LONG" : "SHORT",
 				sig.Event == null ? "release" : sig.Event.Title,
-				sig.SurpriseResult == null ? double.NaN : sig.SurpriseResult.DeviationPercent));
+				sig.SurpriseResult == null ? double.NaN : sig.SurpriseResult.DeviationPercent,
+				late ? "Actual arrived after the news candle closed - entering at market now, stop and target from "
+				       + entryRef.ToString("0.00", CultureInfo.InvariantCulture) + "."
+				     : "Entering at the news candle close."));
 
-			SubmitFixedTrade(sig.Direction, Close[0],
+			SubmitFixedTrade(sig.Direction, entryRef,
 				NewsContinuationStopPoints,
 				NewsContinuationTargetPoints,
 				double.NaN, "NEWSCONT");
@@ -635,7 +692,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				DailyProfitOk = !_dayProfitHit,
 				DayCapOk      = MaxTradesPerDay     == 0 || _tradesDay     < MaxTradesPerDay,
 				SessionCapOk  = MaxTradesPerSession == 0 || _tradesSession < MaxTradesPerSession,
-				FlatOk        = !OnlyOneOpenTrade || (_openTrades.Count == 0 && Position.MarketPosition == MarketPosition.Flat),
+				FlatOk        = ConcurrencyAllows(dir),
 				RiskOk        = risk > 0 && risk >= MinStopTicks * _tickSize,
 				RiskCapOk     = sizing.Accepted,
 				RewardOk      = rewardPoints >= _tickSize
@@ -682,8 +739,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		//
 		// Runs once per bar for every filled, open band trade whose trail mode is not
 		// Off. The stop is only ever moved in the tightening direction — a level that
-		// would loosen it is ignored — so the trail can never increase risk. Fixed
-		// TP/SL trades carry Trail = Off and are never touched here.
+		// would loosen it is ignored — so the trail can never increase risk.
 		/// <summary>
 		/// Moves the stop to the entry fill once the trade is BreakEvenAtR multiples of
 		/// its initial risk onside.
@@ -693,9 +749,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 		/// trigger forward. The move is one-way: if the stop already sits at or beyond
 		/// breakeven — because the trail got there first — it is left alone.
 		///
-		/// Deliberately independent of TrailMode. A fixed-points stop carries Trail = Off
-		/// and is skipped by the trail, but it still gets this, which is the whole point:
-		/// a constant-risk trade that has paid for itself should stop risking money.
+		/// Independent of TrailMode and combinable with it: both only tighten, so whichever
+		/// gives the better stop on a bar wins. RStep already puts the stop at breakeven
+		/// at +1R, so with RStep on, a breakeven trigger of 1R or more never tightens
+		/// anything further - it is redundant rather than harmful.
 		///
 		/// Runs on the bar CLOSE, like everything else here (Calculate.OnBarClose), so the
 		/// trigger is judged on closes. A bar that spikes X R and closes back below it

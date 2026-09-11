@@ -76,6 +76,28 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public int       SessionIndex;
 		public DateTime  SessionOpenTz;
 		public NewsSurpriseResult SurpriseResult;
+		/// <summary>Decided after the news candle closed, because the actual arrived late.</summary>
+		public bool      Late;
+	}
+
+	/// <summary>
+	/// A qualifying release whose news candle has closed but whose ACTUAL has not
+	/// arrived yet. The decision - reversion or continuation - is held rather than
+	/// skipped, and made the moment the figure lands.
+	/// </summary>
+	public sealed class PendingNewsDecision
+	{
+		public NewsEvent Event;
+		public bool      InSession;
+		public int       SessionIndex;
+		public DateTime  SessionOpenTz;
+		public DateTime  NewsCandleOpenTz;
+		public TimeSpan  BarLength;
+		public int       BarIndex;
+		public double    Open;
+		public double    Close;
+
+		public DateTime NewsCandleCloseTz { get { return NewsCandleOpenTz + BarLength; } }
 	}
 
 	public sealed class NewsFairPriceResolver
@@ -102,10 +124,23 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		/// <summary>The single capture currently waiting on post-news consolidation.</summary>
 		private NewsFairPrice _awaiting;
 
-		/// <summary>Per-event report text, emitted once when the branch is decided.</summary>
-		public string LastReport { get; private set; }
-		/// <summary>Set on the bar LastReport changed, so the caller can print it exactly once.</summary>
-		public bool   ReportIsNew { get; private set; }
+		// Report text, queued as decisions are made and drained by the caller - from the
+		// bar loop AND from the strategy's timer. A queue rather than the single
+		// "last report" slot it used to be: two decisions between drains lost one.
+		private readonly List<string> _reports = new List<string>();
+
+		// Releases whose news candle closed without an actual. See PendingNewsDecision.
+		private readonly List<PendingNewsDecision> _pending = new List<PendingNewsDecision>();
+
+		// Reversion captures decided late. Delivered to the Fair Price engine on the next
+		// reference bar, so the engine is only ever advanced from the bar loop.
+		private readonly Queue<NewsFairPrice> _lateCaptures = new Queue<NewsFairPrice>();
+
+		/// <summary>How late an actual may arrive and still trigger a continuation trade.</summary>
+		private readonly TimeSpan _maxWaitForActual;
+
+		/// <summary>Hold, rather than skip, a release whose actual is not in yet.</summary>
+		private readonly bool _holdForActual;
 
 		// Winning event per session-open instant. Resolved from the file, cached.
 		private readonly Dictionary<string, NewsEvent> _chosenCache = new Dictionary<string, NewsEvent>();
@@ -119,7 +154,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		                             FpNewsUnknownRule unknownRule, bool continuationEnabled,
 		                             ConsolidationDetector consolidation,
 		                             Nt8EconomicFeed feed, FpNewsActualSource actualSource,
-		                             bool handleInSession)
+		                             bool handleInSession, TimeSpan maxWaitForActual)
 		{
 			_events       = events ?? new List<NewsEvent>();
 			_sessions     = sessions;
@@ -136,6 +171,10 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			_feed                       = feed;
 			_actualSource               = actualSource;
 			_handleInSession            = handleInSession;
+			_maxWaitForActual           = maxWaitForActual;
+			// Holding only makes sense when something can still deliver the figure. With
+			// FileOnly the file is all there is, and waiting for it would wait forever.
+			_holdForActual              = feed != null && actualSource != FpNewsActualSource.FileOnly;
 		}
 
 		/// <summary>
@@ -167,11 +206,19 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				return;
 			}
 
+			// Looked up again on every call until an actual has been applied. The first
+			// look usually happens before the figure exists, and matching a row that has
+			// no actual yet must not stop the next look from finding one.
 			if (_feed != null && !ev.FeedMatched)
 			{
-				Nt8EconomicRelease live = _feed.Find(ev.Currency, ev.Title);
+				Nt8EconomicRelease live = _feed.Find(ev.Currency, ev.Title, ev.TimeSessionTz);
 				if (live != null)
-					ev.ApplyFeed(live);
+				{
+					if (live.HasActual)
+						ev.ApplyFeed(live);
+					else if (double.IsNaN(ev.FeedForecast) && live.HasConsensus)
+						ev.FeedForecast = live.Consensus;
+				}
 			}
 
 			if (!ev.FeedMatched)
@@ -271,15 +318,22 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public NewsFairPrice OnReferenceBar(DateTime tzBarOpen, TimeSpan barLength, int barIndex,
 		                                    double barOpen, double barHigh, double barLow, double barClose)
 		{
-			ReportIsNew = false;
+			// 1. Anything waiting for its actual. This bar's open is "now" in market time,
+			//    which is what a replayed historical bar needs; the live timer calls
+			//    ResolvePending with the wall clock instead.
+			ResolvePending(tzBarOpen);
 
-			// A release either precedes a session (where it may re-anchor that session's
-			// Fair Price, or fire a continuation trade) or lands inside one (where it may
-			// only re-anchor Fair Price). Both passes run; only one can match a candle.
+			// 2. A release either precedes a session (where it may re-anchor that
+			//    session's Fair Price, or fire a continuation trade) or lands inside one
+			//    (where it may only re-anchor Fair Price). Only one can match a candle.
 			NewsFairPrice made = DetectNewsCandle(tzBarOpen, barLength, barIndex, barOpen, barHigh, barLow, barClose);
 
 			if (made == null && _handleInSession)
-				made = DetectInSessionNewsCandle(tzBarOpen, barLength, barOpen, barClose);
+				made = DetectInSessionNewsCandle(tzBarOpen, barLength, barIndex, barOpen, barClose);
+
+			// 3. A reversion decided late goes live now, unless something fresher did.
+			if (made == null && _lateCaptures.Count > 0)
+				made = _lateCaptures.Dequeue();
 
 			if (made != null)
 				return made;
@@ -319,90 +373,130 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				// once the release has printed, so it is resolved here, not at load time.
 				ResolveActual(chosen);
 
-				NewsSurpriseResult sr = NewsSurpriseClassifier.Classify(
-					chosen, _expectedTolerancePercent, _unexpectedThresholdPercent, _unknownRule);
-
-				// SkipEvent: the file gave nothing to judge on, so this release overrides
-				// nothing and the normal first-candle rule applies to the session.
-				if (sr.Surprise == FpNewsSurprise.Unknown)
+				// Not in yet: hold the decision instead of skipping the release.
+				if (_holdForActual && !chosen.HasActual)
+				{
+					Hold(chosen, false, w.Index, nextOpen, tzBarOpen, barLength, barIndex, barOpen, barClose);
 					continue;
-
-				FpNewsBias bias = NewsSurpriseClassifier.BiasFor(sr.Surprise, _continuationEnabled);
-
-				NewsFairPrice capture = new NewsFairPrice
-				{
-					SessionOpenTz         = nextOpen,
-					SessionIndex          = w.Index,
-					NewsCandleOpenTz      = tzBarOpen,
-					Event                 = chosen,
-					PreNewsPrice          = barOpen,
-					Surprise              = sr.Surprise,
-					SurpriseResult        = sr,
-					Bias                  = bias,
-					DisplacementDirection = barClose > barOpen ? 1 : barClose < barOpen ? -1 : 0,
-					DisplacementSize      = Math.Abs(barClose - barOpen)
-				};
-
-				if (sr.Surprise == FpNewsSurprise.Expected)
-				{
-					// Priced in. The price the market held going into the release is the
-					// fair one, and the displacement after it is the thing to fade.
-					capture.FairPrice             = barOpen;
-					capture.AwaitingConsolidation = false;
-
-					_captured[w.Index] = capture;
-					_awaiting          = null;
-					if (_consolidation != null)
-						_consolidation.Reset();
-
-					made = capture;
-				}
-				else if (_continuationEnabled)
-				{
-					// The actual missed its forecast by more than the threshold, so the move
-					// is legitimate repricing rather than something to fade. Trade WITH the
-					// news candle, entered at its close on a fixed stop and target.
-					//
-					// No Fair Price override is made. The session that follows keeps its own
-					// first-candle rule, which is what any follow-on entry works from.
-					capture.FairPrice             = double.NaN;
-					capture.AwaitingConsolidation = false;
-
-					_captured.Remove(w.Index);
-					_awaiting = null;
-
-					if (capture.DisplacementDirection != 0)
-					{
-						PendingContinuation = new NewsContinuationSignal
-						{
-							Event            = chosen,
-							Direction        = capture.DisplacementDirection,
-							NewsCandleOpen   = barOpen,
-							NewsCandleClose  = barClose,
-							NewsCandleOpenTz = tzBarOpen,
-							SessionIndex     = w.Index,
-							SessionOpenTz    = nextOpen,
-							SurpriseResult   = sr
-						};
-					}
-				}
-				else
-				{
-					// Continuation disabled: refuse to name a Fair Price until the post-news
-					// range says where price is being accepted.
-					capture.FairPrice             = double.NaN;
-					capture.AwaitingConsolidation = true;
-
-					_captured.Remove(w.Index);
-					_awaiting = capture;
-					if (_consolidation != null)
-						_consolidation.Arm(barIndex);
 				}
 
-				WriteReport(capture);
+				NewsFairPrice decided = DecidePreSession(chosen, w.Index, nextOpen, tzBarOpen, barIndex,
+				                                         barOpen, barClose, TimeSpan.Zero, false);
+				if (decided != null)
+					made = decided;
 			}
 
 			return made;
+		}
+
+		/// <summary>
+		/// The pre-session decision, shared by the on-time path and the late path.
+		///   Expected   -> the news candle's OPEN becomes Fair Price for that session.
+		///   Unexpected -> a continuation entry, provided the actual was not too late.
+		/// Returns the capture that goes live, or null.
+		/// </summary>
+		private NewsFairPrice DecidePreSession(NewsEvent chosen, int sessionIndex, DateTime sessionOpenTz,
+		                                       DateTime newsCandleOpenTz, int barIndex, double barOpen, double barClose,
+		                                       TimeSpan lateness, bool late)
+		{
+			NewsSurpriseResult sr = NewsSurpriseClassifier.Classify(
+				chosen, _expectedTolerancePercent, _unexpectedThresholdPercent, _unknownRule);
+
+			NewsFairPrice capture = new NewsFairPrice
+			{
+				SessionOpenTz         = sessionOpenTz,
+				SessionIndex          = sessionIndex,
+				NewsCandleOpenTz      = newsCandleOpenTz,
+				Event                 = chosen,
+				PreNewsPrice          = barOpen,
+				Surprise              = sr.Surprise,
+				SurpriseResult        = sr,
+				Bias                  = NewsSurpriseClassifier.BiasFor(sr.Surprise, _continuationEnabled),
+				DisplacementDirection = barClose > barOpen ? 1 : barClose < barOpen ? -1 : 0,
+				DisplacementSize      = Math.Abs(barClose - barOpen)
+			};
+
+			string when = late ? "actual arrived " + Seconds(lateness) + " after the news candle closed - " : string.Empty;
+
+			// SkipEvent: nothing to judge on, so this release overrides nothing and the
+			// normal first-candle rule applies to the session.
+			if (sr.Surprise == FpNewsSurprise.Unknown)
+			{
+				capture.FairPrice = double.NaN;
+				Report(BuildReport(capture, "no actual to judge on - release skipped, the session's own first-candle Fair Price applies"));
+				return null;
+			}
+
+			if (sr.Surprise == FpNewsSurprise.Expected)
+			{
+				// Priced in. The price the market held going into the release is the
+				// fair one, and the displacement after it is the thing to fade.
+				capture.FairPrice             = barOpen;
+				capture.AwaitingConsolidation = false;
+
+				_captured[sessionIndex] = capture;
+				_awaiting               = null;
+				if (_consolidation != null)
+					_consolidation.Reset();
+
+				Report(BuildReport(capture, when + "MATCHED its forecast - the news candle's open is Fair Price for the session"));
+				return capture;
+			}
+
+			if (_continuationEnabled)
+			{
+				// Missed the forecast by more than the threshold: legitimate repricing,
+				// so trade WITH the news candle on a fixed stop and target. No Fair Price
+				// override - the session keeps its own first-candle rule.
+				capture.FairPrice             = double.NaN;
+				capture.AwaitingConsolidation = false;
+
+				_captured.Remove(sessionIndex);
+				_awaiting = null;
+
+				if (capture.DisplacementDirection == 0)
+				{
+					Report(BuildReport(capture, when + "MISSED its forecast but the news candle closed flat - no direction to continue"));
+				}
+				else if (lateness > _maxWaitForActual)
+				{
+					// A continuation is a reaction to the release. Entering it well after
+					// the fact is a different trade, so it is refused outright.
+					Report(BuildReport(capture, when + "MISSED its forecast, but that is beyond the "
+						+ Seconds(_maxWaitForActual) + " wait - continuation NOT taken"));
+				}
+				else
+				{
+					PendingContinuation = new NewsContinuationSignal
+					{
+						Event            = chosen,
+						Direction        = capture.DisplacementDirection,
+						NewsCandleOpen   = barOpen,
+						NewsCandleClose  = barClose,
+						NewsCandleOpenTz = newsCandleOpenTz,
+						SessionIndex     = sessionIndex,
+						SessionOpenTz    = sessionOpenTz,
+						SurpriseResult   = sr,
+						Late             = late
+					};
+					Report(BuildReport(capture, when + "MISSED its forecast - trading the continuation "
+						+ (capture.DisplacementDirection > 0 ? "LONG" : "SHORT")));
+				}
+				return null;
+			}
+
+			// Continuation disabled: refuse to name a Fair Price until the post-news range
+			// says where price is being accepted.
+			capture.FairPrice             = double.NaN;
+			capture.AwaitingConsolidation = true;
+
+			_captured.Remove(sessionIndex);
+			_awaiting = capture;
+			if (_consolidation != null)
+				_consolidation.Arm(barIndex);
+
+			Report(BuildReport(capture, when + "MISSED its forecast - waiting for post-news consolidation to establish a new Fair Price"));
+			return null;
 		}
 
 		/// <summary>
@@ -420,7 +514,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		/// So a mid-session surprise is a no-op here, which is why this returns null for
 		/// it rather than arming anything.
 		/// </summary>
-		private NewsFairPrice DetectInSessionNewsCandle(DateTime tzBarOpen, TimeSpan barLength,
+		private NewsFairPrice DetectInSessionNewsCandle(DateTime tzBarOpen, TimeSpan barLength, int barIndex,
 		                                                double barOpen, double barClose)
 		{
 			int sessionIndex = _sessions.IndexAt(tzBarOpen);
@@ -436,14 +530,6 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				return null;
 
 			DateTime sessionOpenTz = window.PreviousOpen(tzBarOpen);
-
-			// Only one in-session re-anchor per session: the first qualifying release wins,
-			// so a cluster of same-minute prints cannot keep moving Fair Price underneath
-			// a trade that is already running against it.
-			NewsFairPrice existing;
-			if (_captured.TryGetValue(sessionIndex, out existing)
-				&& existing.InSession && existing.SessionOpenTz == sessionOpenTz)
-				return null;
 
 			NewsEvent chosen = null;
 
@@ -463,6 +549,36 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 
 			ResolveActual(chosen);
 
+			if (_holdForActual && !chosen.HasActual)
+			{
+				Hold(chosen, true, sessionIndex, sessionOpenTz, tzBarOpen, barLength, barIndex, barOpen, barClose);
+				return null;
+			}
+
+			return DecideInSession(chosen, sessionIndex, sessionOpenTz, tzBarOpen, barOpen, barClose, TimeSpan.Zero, false);
+		}
+
+		/// <summary>
+		/// The in-session decision, shared by the on-time path and the late path. The
+		/// two branches are deliberately asymmetric, and this is the whole rule:
+		///   ACTUAL ~= FORECAST  -> priced in; the news candle's OPEN replaces the
+		///                          session's Fair Price for the rest of the session.
+		///   ACTUAL != FORECAST  -> no continuation mid-session. The session's own
+		///                          first-candle Fair Price simply STANDS.
+		/// </summary>
+		private NewsFairPrice DecideInSession(NewsEvent chosen, int sessionIndex, DateTime sessionOpenTz,
+		                                      DateTime newsCandleOpenTz, double barOpen, double barClose,
+		                                      TimeSpan lateness, bool late)
+		{
+			// Only one in-session re-anchor per session: the first qualifying release wins,
+			// so a cluster of prints cannot keep moving Fair Price under a running trade.
+			// Checked here, not at detection, because a late decision can land after
+			// another release already re-anchored the session.
+			NewsFairPrice existing;
+			if (_captured.TryGetValue(sessionIndex, out existing)
+				&& existing.InSession && existing.SessionOpenTz == sessionOpenTz)
+				return null;
+
 			NewsSurpriseResult sr = NewsSurpriseClassifier.Classify(
 				chosen, _expectedTolerancePercent, _unexpectedThresholdPercent, _unknownRule);
 
@@ -471,7 +587,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				SessionOpenTz         = sessionOpenTz,
 				SessionIndex          = sessionIndex,
 				InSession             = true,
-				NewsCandleOpenTz      = tzBarOpen,
+				NewsCandleOpenTz      = newsCandleOpenTz,
 				Event                 = chosen,
 				PreNewsPrice          = barOpen,
 				Surprise              = sr.Surprise,
@@ -481,29 +597,24 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				DisplacementSize      = Math.Abs(barClose - barOpen)
 			};
 
-			// SkipEvent with nothing to judge on: the release overrides nothing and the
-			// session's own first-candle rule applies. Not a "missed forecast".
+			string when = late ? "actual arrived " + Seconds(lateness) + " after the news candle closed - " : string.Empty;
+
 			if (sr.Surprise == FpNewsSurprise.Unknown)
 			{
 				capture.FairPrice = double.NaN;
-				LastReport  = BuildReport(capture, "release landed INSIDE the session but carried no actual to judge on - "
-					+ "the session's own Fair Price stands, untouched");
-				ReportIsNew = true;
+				Report(BuildReport(capture, "release landed INSIDE the session but carried no actual to judge on - "
+					+ "the session's own Fair Price stands, untouched"));
 				return null;
 			}
 
 			if (sr.Surprise != FpNewsSurprise.Expected)
 			{
-				// Surprise mid-session. Nothing is overridden and nothing is armed; the
-				// session Fair Price stands. Reported so the log explains the non-event.
 				capture.FairPrice = double.NaN;
-				LastReport  = BuildReport(capture, "release landed INSIDE the session and MISSED its forecast - "
-					+ "no continuation mid-session, the session's own Fair Price stands and reversion continues against it");
-				ReportIsNew = true;
+				Report(BuildReport(capture, when + "release landed INSIDE the session and MISSED its forecast - "
+					+ "no continuation mid-session, the session's own Fair Price stands and reversion continues against it"));
 				return null;
 			}
 
-			// Priced in: the price held going into the release is the fair one from here on.
 			capture.FairPrice             = barOpen;
 			capture.AwaitingConsolidation = false;
 
@@ -512,9 +623,8 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			if (_consolidation != null)
 				_consolidation.Reset();
 
-			LastReport  = BuildReport(capture, "release landed INSIDE the session and MATCHED its forecast - "
-				+ "the news candle's open replaces the session Fair Price for the rest of the session");
-			ReportIsNew = true;
+			Report(BuildReport(capture, when + "release landed INSIDE the session and MATCHED its forecast - "
+				+ "the news candle's open replaces the session Fair Price for the rest of the session"));
 			return capture;
 		}
 
@@ -531,8 +641,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 				// session then simply runs without a news Fair Price.
 				NewsFairPrice dead = _awaiting;
 				_awaiting   = null;
-				LastReport  = BuildReport(dead, "consolidation never formed inside the search window - news override abandoned");
-				ReportIsNew = true;
+				Report(BuildReport(dead, "consolidation never formed inside the search window - news override abandoned"));
 				return null;
 			}
 
@@ -546,8 +655,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			_captured[cap.SessionIndex] = cap;
 			_awaiting = null;
 
-			LastReport  = BuildReport(cap, "new Fair Price accepted at the post-news consolidation midpoint");
-			ReportIsNew = true;
+			Report(BuildReport(cap, "new Fair Price accepted at the post-news consolidation midpoint"));
 			return cap;
 		}
 
@@ -561,12 +669,134 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			return held == null ? FpNewsBias.Reversion : held.Bias;
 		}
 
-		private void WriteReport(NewsFairPrice cap)
+		private void Report(string text)
 		{
-			LastReport = BuildReport(cap, cap.AwaitingConsolidation
-				? "waiting for post-news consolidation to establish a new Fair Price"
-				: "pre-news price stands as Fair Price");
-			ReportIsNew = true;
+			if (!string.IsNullOrEmpty(text))
+				_reports.Add(text);
+		}
+
+		/// <summary>Every report queued since the last call, oldest first.</summary>
+		public List<string> TakeReports()
+		{
+			List<string> r = new List<string>(_reports);
+			_reports.Clear();
+			return r;
+		}
+
+		/// <summary>True while at least one release is waiting for its actual.</summary>
+		public bool HasPending { get { return _pending.Count > 0; } }
+
+		private void Hold(NewsEvent chosen, bool inSession, int sessionIndex, DateTime sessionOpenTz,
+		                  DateTime newsCandleOpenTz, TimeSpan barLength, int barIndex, double barOpen, double barClose)
+		{
+			foreach (PendingNewsDecision p in _pending)
+				if (ReferenceEquals(p.Event, chosen))
+					return;
+
+			PendingNewsDecision held = new PendingNewsDecision
+			{
+				Event            = chosen,
+				InSession        = inSession,
+				SessionIndex     = sessionIndex,
+				SessionOpenTz    = sessionOpenTz,
+				NewsCandleOpenTz = newsCandleOpenTz,
+				BarLength        = barLength,
+				BarIndex         = barIndex,
+				Open             = barOpen,
+				Close            = barClose
+			};
+			_pending.Add(held);
+
+			Report(BuildReport(Shown(held), "ACTUAL NOT IN YET when the news candle closed - decision HELD, re-checking "
+				+ "until it arrives. A continuation is only taken within " + Seconds(_maxWaitForActual)
+				+ "; a reversion Fair Price applies whenever it lands before the session ends"));
+		}
+
+		/// <summary>
+		/// Tries every held release again. <paramref name="nowSessionTz"/> is "now" in
+		/// the session zone: the current bar's open from the bar loop, the wall clock
+		/// from the live timer. Returns how many were decided.
+		/// </summary>
+		public int ResolvePending(DateTime nowSessionTz)
+		{
+			if (_pending.Count == 0)
+				return 0;
+
+			int decided = 0;
+
+			for (int i = _pending.Count - 1; i >= 0; i--)
+			{
+				PendingNewsDecision p = _pending[i];
+
+				ResolveActual(p.Event);
+
+				if (!p.Event.HasActual)
+				{
+					// Backstop: nothing is held past a day, whatever else happens.
+					if (nowSessionTz - p.NewsCandleOpenTz > TimeSpan.FromHours(24))
+					{
+						_pending.RemoveAt(i);
+						Report(BuildReport(Shown(p), "no actual arrived within 24 hours - release skipped"));
+					}
+					continue;
+				}
+
+				_pending.RemoveAt(i);
+				decided++;
+
+				TimeSpan lateness = nowSessionTz - p.NewsCandleCloseTz;
+				if (lateness < TimeSpan.Zero)
+					lateness = TimeSpan.Zero;
+
+				NewsFairPrice cap = p.InSession
+					? DecideInSession(p.Event, p.SessionIndex, p.SessionOpenTz, p.NewsCandleOpenTz,
+					                  p.Open, p.Close, lateness, true)
+					: DecidePreSession(p.Event, p.SessionIndex, p.SessionOpenTz, p.NewsCandleOpenTz,
+					                   p.BarIndex, p.Open, p.Close, lateness, true);
+
+				if (cap != null)
+					_lateCaptures.Enqueue(cap);
+			}
+
+			return decided;
+		}
+
+		/// <summary>Drops held releases belonging to a session that has just ended.</summary>
+		public void ExpirePendingForSession(int sessionIndex)
+		{
+			for (int i = _pending.Count - 1; i >= 0; i--)
+			{
+				PendingNewsDecision p = _pending[i];
+				if (p.SessionIndex != sessionIndex)
+					continue;
+
+				_pending.RemoveAt(i);
+				Report(BuildReport(Shown(p), "session ended before the actual arrived - release skipped"));
+			}
+		}
+
+		/// <summary>A report-only view of a held release.</summary>
+		private static NewsFairPrice Shown(PendingNewsDecision p)
+		{
+			return new NewsFairPrice
+			{
+				SessionOpenTz         = p.SessionOpenTz,
+				SessionIndex          = p.SessionIndex,
+				InSession             = p.InSession,
+				NewsCandleOpenTz      = p.NewsCandleOpenTz,
+				Event                 = p.Event,
+				PreNewsPrice          = p.Open,
+				Surprise              = FpNewsSurprise.Unknown,
+				Bias                  = FpNewsBias.Wait,
+				FairPrice             = double.NaN,
+				DisplacementDirection = p.Close > p.Open ? 1 : p.Close < p.Open ? -1 : 0,
+				DisplacementSize      = Math.Abs(p.Close - p.Open)
+			};
+		}
+
+		private static string Seconds(TimeSpan t)
+		{
+			return ((int)Math.Round(t.TotalSeconds)).ToString(CultureInfo.InvariantCulture) + "s";
 		}
 
 		/// <summary>
@@ -592,7 +822,7 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 			sb.AppendLine("DISPLACEMENT  : " + (cap.DisplacementDirection > 0 ? "Up " : cap.DisplacementDirection < 0 ? "Down " : "flat ")
 			                                 + cap.DisplacementSize.ToString("0.##", CultureInfo.InvariantCulture) + " pts on the news candle");
 			sb.AppendLine("FAIR PRICE    : " + (double.IsNaN(cap.FairPrice)
-				? "pending"
+				? (cap.Bias == FpNewsBias.Continuation ? "no override (continuation)" : "pending")
 				: cap.FairPrice.ToString("0.#####", CultureInfo.InvariantCulture)
 				  + (cap.Surprise == FpNewsSurprise.Expected ? "  (pre-news price)" : "  (post-news consolidation midpoint)")));
 			sb.AppendLine("STRATEGY      : " + cap.Bias);
@@ -620,6 +850,9 @@ namespace NinjaTrader.NinjaScript.Strategies.FPMR
 		public void Reset()
 		{
 			_captured.Clear();
+			_pending.Clear();
+			_lateCaptures.Clear();
+			_reports.Clear();
 			_awaiting = null;
 			if (_consolidation != null)
 				_consolidation.Reset();
